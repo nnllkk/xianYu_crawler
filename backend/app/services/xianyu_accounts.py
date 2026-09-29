@@ -23,7 +23,23 @@ class XianyuAccountService:
         directory.mkdir(parents=True, exist_ok=True)
         return directory / f"{name}.json"
 
+    def release_expired_cooldowns(self, session: Session) -> bool:
+        """将已到期的冷却账号恢复为可用，避免状态标签滞留在“冷却中”。"""
+        now = beijing_now()
+        accounts = session.scalars(
+            select(XianyuAccount).where(
+                XianyuAccount.status == "cooldown",
+                XianyuAccount.cooldown_until.is_not(None),
+                XianyuAccount.cooldown_until <= now,
+            )
+        ).all()
+        for account in accounts:
+            account.status = "active"
+            account.cooldown_until = None
+        return bool(accounts)
+
     def choose_available(self, session: Session, excluded_ids: set[str]) -> XianyuAccount | None:
+        self.release_expired_cooldowns(session)
         now = beijing_now()
         statement = (select(XianyuAccount)
                      .where(XianyuAccount.is_enabled.is_(True), XianyuAccount.status == "active",
@@ -45,6 +61,13 @@ class XianyuAccountService:
         account.last_used_at = beijing_now()
         account.status = "cooldown"
         account.cooldown_until = beijing_now() + timedelta(minutes=self.settings.xianyu_account_cooldown_minutes)
+
+    def mark_login_required(self, account: XianyuAccount, reason: str) -> None:
+        """登录页跳转表示状态已失效，不应被误记为平台风控。"""
+        account.last_error = reason
+        account.last_used_at = beijing_now()
+        account.status = "needs_login"
+        account.cooldown_until = None
 
     async def capture_login_state(self, account_id: str) -> None:
         """打开可见浏览器，检测登录完成后自动保存 storage_state。"""

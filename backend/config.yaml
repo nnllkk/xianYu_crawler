@@ -28,8 +28,10 @@ scheduler:
   max_interval_minutes: 30
   max_task_retries: 3
 collector:
-  search_delay_min_seconds: 5
-  search_delay_max_seconds: 15
+  # 闲鱼会拦截当前无头浏览器环境；默认使用可见浏览器进行已授权会话采集。
+  headless: false
+  page_delay_min_seconds: 5
+  page_delay_max_seconds: 15
 xianyu:
   state_dir: data/xianyu_states
   account_cooldown_minutes: 60

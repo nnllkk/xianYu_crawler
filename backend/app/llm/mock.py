@@ -16,10 +16,9 @@ class MockProvider(LLMProvider):
             conditions = [item.strip() for item in (payload.get("extra_conditions") or "").split("+") if item.strip()]
             return json.dumps({
                 "keyword": product,
-                "search_queries": [product, f"{product} 二手", f"{product} 高配"],
+                "search_query": product,
                 "price_range": {"min": None, "max": None},
                 "conditions": conditions,
-                "exclude_keywords": payload.get("exclude_keywords") or [],
                 "original_input": payload,
             }, ensure_ascii=False)
         if schema_name == "ProductConditions":

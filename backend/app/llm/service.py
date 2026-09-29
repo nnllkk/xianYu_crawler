@@ -20,13 +20,12 @@ USER_REQUIREMENT_SYSTEM_PROMPT = """你是闲鱼二手商品需求解析器。
 
 必须遵守：
 1. keyword 必须等于 product，不得换成泛化词或遗漏品牌/型号。
-2. search_queries 必须恰好 3 条、彼此不同、每条都可直接输入闲鱼搜索框；保留关键型号和用户明确规格，不得编造用户未提及的年份、成色或配件。
+2. search_query 必须是一条可直接输入闲鱼搜索框的完整搜索语句；保留关键型号和用户明确规格，不得编造用户未提及的年份、成色或配件。
 3. budget 为空时 price_range.min 和 max 都为 null；"6000-8000" 必须输出 min=6000、max=8000；"6000-" 只输出 min=6000；"-8000" 只输出 max=8000。不得因为搜索语句或商品推测改写预算。
-4. conditions 必须覆盖 extra_conditions 的全部要求，使用独立自然语言字符串。缩写要标准化："32G+512G" 在笔记本语境表示"内存至少32GB"和"存储至少512GB"；"16寸"表示"屏幕尺寸16寸"。但当语境不能确定含义时保留原文，不要猜测。
-5. exclude_keywords 必须逐项保留输入内容；输入为空时输出空数组。
-6. original_input 必须逐字段原样保留 product、extra_conditions、budget。
+4. conditions 必须覆盖 extra_conditions 的全部要求，使用独立自然语言字符串。缩写要标准化："32G+512G" 在笔记本语境表示"内存至少32GB"和"存储至少512GB"；"16寸"表示"屏幕尺寸16寸"。对于“不要维修机”等否定要求，也要保留否定含义。但当语境不能确定含义时保留原文，不要猜测。
+5. original_input 必须逐字段原样保留 product、extra_conditions、budget。
 
-示例：product="MacBook M1 Pro"，extra_conditions="16寸 32G+512G"，budget="6000-8000"，exclude_keywords=["维修机"] 时，conditions 至少包含"屏幕尺寸16寸"、"内存至少32GB"、"存储至少512GB"，price_range 为 {"min":6000,"max":8000}，exclude_keywords 为 ["维修机"]。"""
+示例：product="MacBook M1 Pro"，extra_conditions="16寸 32G+512G，不要维修机"，budget="6000-8000" 时，conditions 至少包含"屏幕尺寸16寸"、"内存至少32GB"、"存储至少512GB"和“不接受维修机”，price_range 为 {"min":6000,"max":8000}。"""
 
 
 PRODUCT_CONDITIONS_SYSTEM_PROMPT = """你是闲鱼搜索列表商品信息提取器。
@@ -92,10 +91,8 @@ class LLMService:
                 break
         raise RuntimeError(f"LLM {schema.__name__} 调用失败：{last_error}") from last_error
 
-    def parse_requirement(self, product: str, extra_conditions: str | None, budget: str | None,
-                          exclude_keywords: list[str]) -> UserRequirement:
-        payload = {"product": product, "extra_conditions": extra_conditions, "budget": budget,
-                   "exclude_keywords": exclude_keywords}
+    def parse_requirement(self, product: str, extra_conditions: str | None, budget: str | None) -> UserRequirement:
+        payload = {"product": product, "extra_conditions": extra_conditions, "budget": budget}
         result = self._request(
             UserRequirement,
             USER_REQUIREMENT_SYSTEM_PROMPT,
@@ -103,7 +100,6 @@ class LLMService:
         )
         # 预算是固定格式，不能让模型偶发遗漏破坏后续确定性筛选。
         result.price_range = self._parse_budget(budget)
-        result.exclude_keywords = exclude_keywords
         result.original_input.product = product
         result.original_input.extra_conditions = extra_conditions
         result.original_input.budget = budget

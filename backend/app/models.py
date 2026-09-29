@@ -34,7 +34,6 @@ class WatchRule(Base):
     product: Mapped[str] = mapped_column(String(255))
     extra_conditions: Mapped[str | None] = mapped_column(Text)
     budget: Mapped[str | None] = mapped_column(String(64))
-    exclude_keywords: Mapped[list[str]] = mapped_column(JSON, default=list)
     parsed_requirement: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     interval_minutes: Mapped[int] = mapped_column(default=15)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime)

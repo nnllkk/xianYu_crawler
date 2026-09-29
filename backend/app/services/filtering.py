@@ -28,9 +28,6 @@ def deterministic_filter(session: Session, rule: WatchRule, items: list[dict], r
         price_decimal = Decimal(str(price))
         if minimum is not None and price_decimal < minimum or maximum is not None and price_decimal > maximum:
             continue
-        searchable = f"{item.get('title') or ''} {(item.get('raw_data') or {}).get('card_text') or ''}".lower()
-        if any(word.lower() in searchable for word in (rule.exclude_keywords or [])):
-            continue
         existing = session.scalar(select(Listing).where(Listing.xianyu_item_id == item_id))
         states = session.scalars(select(NotificationState).where(
             NotificationState.rule_id == rule.id,

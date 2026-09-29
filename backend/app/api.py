@@ -4,6 +4,7 @@ import threading
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,6 +12,7 @@ from .config import get_settings
 from .database import get_session
 from .llm.service import LLMService
 from .llm.factory import ProviderFactory
+from .llm.schemas import UserRequirement
 from .models import NotificationLog, RuleRecipient, TaskRun, WatchRule, XianyuAccount
 from .schemas import RuleCreate, RuleResponse, TaskResponse, XianyuAccountCreate, XianyuAccountResponse
 from .services.xianyu_accounts import XianyuAccountService
@@ -33,6 +35,19 @@ def get_runner() -> TaskRunner:
     return TaskRunner(settings, LLMService(ProviderFactory.create(settings, settings.llm_provider), settings))
 
 
+def parse_rule_requirement(payload: RuleCreate) -> UserRequirement:
+    """在保存规则前完成需求解析，确保首次任务可直接使用缓存。"""
+    settings = get_settings()
+    try:
+        return LLMService(ProviderFactory.create(settings, settings.llm_provider), settings).parse_requirement(
+            payload.product,
+            payload.extra_conditions,
+            payload.budget,
+        )
+    except (RuntimeError, ValidationError, ValueError) as exc:
+        raise HTTPException(502, f"需求解析失败，规则未保存：{exc}") from exc
+
+
 def serialize_xianyu_account(account: XianyuAccount) -> dict:
     return {
         "id": account.id, "name": account.name, "status": account.status,
@@ -45,6 +60,9 @@ def serialize_xianyu_account(account: XianyuAccount) -> dict:
 
 @router.get("/xianyu-accounts", response_model=list[XianyuAccountResponse])
 def list_xianyu_accounts(session: Session = Depends(get_session)):
+    accounts_service = XianyuAccountService(get_settings())
+    if accounts_service.release_expired_cooldowns(session):
+        session.commit()
     accounts = session.scalars(select(XianyuAccount).order_by(XianyuAccount.created_at.desc())).all()
     return [serialize_xianyu_account(account) for account in accounts]
 
@@ -106,7 +124,7 @@ def serialize_rule(rule: WatchRule) -> RuleResponse:
     """将 ORM 规则统一转换为前端编辑和状态展示需要的字段。"""
     return RuleResponse(
         id=rule.id, product=rule.product, extra_conditions=rule.extra_conditions, budget=rule.budget,
-        exclude_keywords=rule.exclude_keywords or [], interval_minutes=rule.interval_minutes,
+        interval_minutes=rule.interval_minutes,
         is_enabled=rule.is_enabled, next_run_at=rule.next_run_at,
         emails=[item.email for item in rule.recipients], parsed_requirement=rule.parsed_requirement,
     )
@@ -114,8 +132,9 @@ def serialize_rule(rule: WatchRule) -> RuleResponse:
 
 @router.post("/rules", response_model=RuleResponse)
 def create_rule(payload: RuleCreate, session: Session = Depends(get_session)):
+    requirement = parse_rule_requirement(payload)
     rule = WatchRule(product=payload.product, extra_conditions=payload.extra_conditions, budget=payload.budget,
-                     exclude_keywords=payload.exclude_keywords, interval_minutes=payload.interval_minutes,
+                     parsed_requirement=requirement.model_dump(mode="json"), interval_minutes=payload.interval_minutes,
                      is_enabled=payload.enabled)
     rule.recipients = [RuleRecipient(email=str(email)) for email in payload.emails]
     session.add(rule)
@@ -134,9 +153,10 @@ def update_rule(rule_id: str, payload: RuleCreate, session: Session = Depends(ge
     rule = session.get(WatchRule, rule_id)
     if not rule:
         raise HTTPException(404, "规则不存在")
+    requirement = parse_rule_requirement(payload)
     rule.product, rule.extra_conditions, rule.budget = payload.product, payload.extra_conditions, payload.budget
-    rule.exclude_keywords, rule.interval_minutes, rule.is_enabled = payload.exclude_keywords, payload.interval_minutes, payload.enabled
-    rule.parsed_requirement = None
+    rule.interval_minutes, rule.is_enabled = payload.interval_minutes, payload.enabled
+    rule.parsed_requirement = requirement.model_dump(mode="json")
     rule.recipients.clear()
     rule.recipients.extend(RuleRecipient(email=str(email)) for email in payload.emails)
     session.commit()

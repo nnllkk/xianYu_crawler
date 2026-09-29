@@ -4,12 +4,14 @@ from hashlib import sha256
 from datetime import datetime
 
 from sqlalchemy import select
+from pydantic import ValidationError
 
 from ..config import Settings
 from ..database import SessionLocal
 from ..llm.service import LLMService
+from ..llm.schemas import UserRequirement
 from ..models import Listing, NotificationLog, NotificationState, TaskRun, WatchRule, beijing_now, to_beijing_naive
-from .collector import CollectorService, SearchPageError
+from .collector import AccessLimitedError, CollectionError, CollectorService, LoginRequiredError
 from .filtering import deterministic_filter
 from .mailer import Mailer
 from .xianyu_accounts import XianyuAccountService
@@ -32,6 +34,18 @@ class TaskRunner:
         self.collector = CollectorService(settings)
         self.mailer = Mailer(settings)
         self.accounts = XianyuAccountService(settings)
+
+    def requirement_for(self, rule: WatchRule) -> UserRequirement:
+        """复用创建规则时的解析结果；仅为历史或损坏缓存补做一次解析。"""
+        if rule.parsed_requirement:
+            try:
+                return UserRequirement.model_validate(rule.parsed_requirement)
+            except ValidationError:
+                logger.warning("saved rule requirement is invalid; reparsing", extra={"rule_id": rule.id})
+        requirement = self.llm.parse_requirement(rule.product, rule.extra_conditions, rule.budget)
+        rule.parsed_requirement = requirement.model_dump(mode="json")
+        return requirement
+
     async def run(self, rule_id: str, task_id: str | None = None) -> str:
         with self._state_lock:
             if rule_id in self._stop_requested:
@@ -49,17 +63,18 @@ class TaskRunner:
             task = session.get(TaskRun, task_id) if task_id else TaskRun(rule_id=rule_id)
             if not task_id:
                 session.add(task)
-            task.status, task.stage, task.started_at = "running", "parsing", beijing_now()
+            task.status, task.stage, task.started_at = "running", "scraping", beijing_now()
             task.error_message, task.finished_at = None, None
             task.scraped_count, task.candidate_count, task.sent_count = 0, 0, 0
             session.commit()
 
-            requirement = self.llm.parse_requirement(rule.product, rule.extra_conditions, rule.budget, rule.exclude_keywords or [])
-            rule.parsed_requirement = requirement.model_dump(mode="json")
-            task.search_queries, task.stage = requirement.search_queries, "scraping"
+            requirement = self.requirement_for(rule)
+            # 数据库字段保留为 JSON 以兼容既有任务记录；新任务只保存这一条搜索语句。
+            task.search_queries, task.stage = [requirement.search_query], "scraping"
             session.commit()
 
-            # 只在平台明确拒绝当前会话时切换到另一个已授权账号；普通采集错误仍按任务重试处理。
+            # 仅在登录态失效或平台明确拒绝当前会话时切换账号。
+            # 页面结构变化、超时等普通错误不能进入冷却，否则会误伤可正常使用的账号。
             tried_account_ids: set[str] = set()
             raw_items = None
             while account := self.accounts.choose_available(session, tried_account_ids):
@@ -67,12 +82,20 @@ class TaskRunner:
                 task.xianyu_account_id = account.id
                 session.commit()
                 try:
-                    raw_items = await self.collector.search(requirement.search_queries, account.state_path)
-                except SearchPageError as exc:
+                    raw_items = await self.collector.search(requirement.search_query, account.state_path)
+                except LoginRequiredError as exc:
+                    self.accounts.mark_login_required(account, str(exc))
+                    session.commit()
+                    logger.info("xianyu account needs login", extra={"account_id": account.id, "reason": str(exc)})
+                    continue
+                except AccessLimitedError as exc:
                     self.accounts.mark_access_limited(account, str(exc))
                     session.commit()
                     logger.warning("xianyu account entered cooldown", extra={"account_id": account.id, "reason": str(exc)})
                     continue
+                except CollectionError:
+                    # 普通采集故障保留原始异常，供任务记录和日志诊断；账号继续保持 active。
+                    raise
                 self.accounts.mark_success(account)
                 session.commit()
                 break

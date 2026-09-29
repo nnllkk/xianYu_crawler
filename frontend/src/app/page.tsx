@@ -27,7 +27,6 @@ type Rule = {
   product: string;
   extra_conditions: string | null;
   budget: string | null;
-  exclude_keywords: string[];
   interval_minutes: number;
   is_enabled: boolean;
   next_run_at: string | null;
@@ -67,7 +66,6 @@ type Draft = {
   product: string;
   extra_conditions: string;
   budget: string;
-  exclude_keywords: string;
   emails: string;
   interval_minutes: number;
   enabled: boolean;
@@ -76,14 +74,13 @@ const empty: Draft = {
   product: "",
   extra_conditions: "",
   budget: "",
-  exclude_keywords: "",
   emails: "",
   interval_minutes: 15,
   enabled: true,
 };
 const stages: Record<string, string> = {
   pending: "等待中",
-  parsing: "解析条件",
+  parsing: "解析商品",
   scraping: "检索商品",
   filtering: "规则筛选",
   ranking: "比较候选",
@@ -216,7 +213,6 @@ export default function Home() {
         product: draft.product.trim(),
         extra_conditions: draft.extra_conditions || null,
         budget: draft.budget || null,
-        exclude_keywords: parts(draft.exclude_keywords),
         emails,
         interval_minutes: Number(draft.interval_minutes),
         enabled: draft.enabled,
@@ -316,7 +312,6 @@ export default function Home() {
       product: r.product,
       extra_conditions: r.extra_conditions ?? "",
       budget: r.budget ?? "",
-      exclude_keywords: r.exclude_keywords.join("，"),
       emails: r.emails.join("，"),
       interval_minutes: r.interval_minutes,
       enabled: r.is_enabled,
@@ -545,15 +540,7 @@ export default function Home() {
                   <textarea
                     value={draft.extra_conditions}
                     onChange={(e) => change("extra_conditions", e.target.value)}
-                    placeholder="例如：16寸 32G+512G，成色好，无拆修"
-                  />
-                </label>
-                <label>
-                  排除词
-                  <textarea
-                    value={draft.exclude_keywords}
-                    onChange={(e) => change("exclude_keywords", e.target.value)}
-                    placeholder="维修机，企业管理机"
+                    placeholder="例如：16寸 32G+512G，成色好，不要维修机或企业管理机"
                   />
                 </label>
                 <label>
@@ -764,7 +751,7 @@ export default function Home() {
                   <div className="chips">
                     {current.parsed_requirement?.conditions?.map((x) => (
                       <span key={x}>{x}</span>
-                    )) ?? <span>将在第一次任务后生成</span>}
+                    )) ?? <span>将在创建规则时生成</span>}
                   </div>
                   <div className="section-title">已发送商品</div>
                   {logs.length ? (

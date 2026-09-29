@@ -22,10 +22,9 @@ class OriginalInput(BaseModel):
 
 class UserRequirement(BaseModel):
     keyword: str
-    search_queries: list[str] = Field(min_length=3, max_length=3)
+    search_query: str = Field(min_length=1)
     price_range: PriceRange = Field(default_factory=PriceRange)
     conditions: list[str] = Field(default_factory=list)
-    exclude_keywords: list[str] = Field(default_factory=list)
     original_input: OriginalInput
 
 

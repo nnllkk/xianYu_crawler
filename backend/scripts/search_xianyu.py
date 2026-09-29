@@ -35,10 +35,30 @@ CARD_SELECTORS = (
     '[class*="feed-card"]',
     '[class*="FeedCard"]',
 )
+NEXT_PAGE_SELECTORS = (
+    'button[aria-label*="下一页"]',
+    'a[aria-label*="下一页"]',
+    '[role="button"][aria-label*="下一页"]',
+    'button:has-text("下一页")',
+    'a:has-text("下一页")',
+    '[role="button"]:has-text("下一页")',
+)
 
 
 class SearchPageError(RuntimeError):
-    """页面无法安全完成搜索或页面结构不符合预期时抛出。"""
+    """采集搜索页时发生的可预期错误的基类。"""
+
+
+class LoginRequiredError(SearchPageError):
+    """登录态已失效，页面跳转到闲鱼登录流程。"""
+
+
+class AccessLimitedError(SearchPageError):
+    """闲鱼明确返回了验证码、安全验证或非法访问页面。"""
+
+
+class CollectionError(SearchPageError):
+    """非登录、非平台限制的普通采集错误，例如页面结构变化。"""
 
 
 @dataclass
@@ -68,10 +88,10 @@ def parse_args() -> argparse.Namespace:
         help="使用无头浏览器；默认显示浏览器窗口，便于人工完成登录或查看访问限制。",
     )
     parser.add_argument(
-        "--max-scrolls",
+        "--max-pages",
         type=int,
-        default=100,
-        help="加载更多商品时允许的最大滚动次数，默认 100。",
+        default=20,
+        help="最多采集的搜索结果页数，默认 20。",
     )
     return parser.parse_args()
 
@@ -91,10 +111,14 @@ async def first_visible_locator(page: Page, selectors: tuple[str, ...]) -> Locat
 
 
 async def ensure_page_is_usable(page: Page) -> None:
+    page_url = page.url.lower()
+    if "passport.goofish.com" in page_url or "mini_login" in page_url:
+        raise LoginRequiredError(f"闲鱼登录态已失效，已跳转到登录页面：{page.url}")
+
     body_text = await page.locator("body").inner_text()
     marker = next((item for item in BLOCKED_PAGE_MARKERS if item in body_text), None)
     if marker:
-        raise SearchPageError(
+        raise AccessLimitedError(
             f"闲鱼页面未允许自动化访问，检测到：{marker}。"
             "请在可合法访问的浏览器会话中完成登录或验证后再重试。"
         )
@@ -106,31 +130,13 @@ async def search(page: Page, keyword: str) -> None:
 
     search_input = await first_visible_locator(page, SEARCH_INPUT_SELECTORS)
     if search_input is None:
-        raise SearchPageError("未找到闲鱼搜索框，页面结构可能已变化。")
+        raise CollectionError("未找到闲鱼搜索框，页面结构可能已变化。")
 
     await search_input.fill(keyword)
     await search_input.press("Enter")
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(1_000)
     await ensure_page_is_usable(page)
-
-
-async def scroll_to_end(page: Page, max_scrolls: int) -> None:
-    """无限滚动列表没有总页数；连续三次高度不增长即视为已加载完当前结果。"""
-    stable_rounds = 0
-    previous_height = 0
-    for _ in range(max_scrolls):
-        height = await page.evaluate("document.body.scrollHeight")
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await page.wait_for_timeout(700)
-        new_height = await page.evaluate("document.body.scrollHeight")
-        if new_height <= height and height <= previous_height:
-            stable_rounds += 1
-            if stable_rounds >= 3:
-                return
-        else:
-            stable_rounds = 0
-        previous_height = new_height
 
 
 async def get_text(locator: Locator) -> str | None:
@@ -230,8 +236,7 @@ async def normalize_card(card: Locator, keyword: str, collected_at: str) -> List
     )
 
 
-async def collect_listings(page: Page, keyword: str, max_scrolls: int) -> list[Listing]:
-    await scroll_to_end(page, max_scrolls)
+async def collect_listings(page: Page, keyword: str) -> list[Listing]:
     cards = await get_cards(page)
     # 标准化 JSON 对外明确携带北京时间偏移，避免下游将无时区时间误解为 UTC。
     collected_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
@@ -247,51 +252,99 @@ async def collect_listings(page: Page, keyword: str, max_scrolls: int) -> list[L
     return listings
 
 
-async def run(keyword: str, headless: bool, max_scrolls: int,
-              executable_path: str | None = None) -> list[Listing]:
-    async with async_playwright() as playwright:
-        executable_path = executable_path or os.environ.get("PLAYWRIGHT_EXECUTABLE_PATH")
-        browser = await playwright.chromium.launch(headless=headless, executable_path=executable_path)
-        page = await browser.new_page()
-        try:
-            await search(page, keyword)
-            return await collect_listings(page, keyword, max_scrolls)
-        finally:
-            await browser.close()
+async def find_next_page(page: Page) -> Locator | None:
+    """返回当前可点击的下一页控件；页面没有分页或已到末页时返回 None。"""
+    locator = await first_visible_locator(page, NEXT_PAGE_SELECTORS)
+    if locator is None:
+        return None
+    classes = (await locator.get_attribute("class") or "").lower()
+    disabled = (
+        await locator.is_disabled()
+        or (await locator.get_attribute("aria-disabled")) == "true"
+        or "disabled" in classes
+    )
+    return None if disabled else locator
 
 
-async def run_queries(queries: list[str], headless: bool, max_scrolls: int,
-                      executable_path: str | None = None,
-                      delay_min_seconds: int = 5,
-                      delay_max_seconds: int = 15,
-                      storage_state_path: str | None = None) -> list[Listing]:
-    """在一个浏览器上下文中串行执行多条搜索，降低短时间内建立多个会话的概率。"""
-    if not queries:
+async def pause_between_pages(page: Page, minimum_seconds: int, maximum_seconds: int) -> None:
+    """翻页前后留出随机人工操作间隔，避免对搜索结果连续发出翻页请求。"""
+    await page.wait_for_timeout(random.randint(minimum_seconds, maximum_seconds) * 1000)
+
+
+async def launch_collector_browser(playwright: Any, headless: bool, executable_path: str | None) -> Any:
+    """优先复用本机 Chrome，保持登录采集和搜索采集处于同一浏览器通道。"""
+    if executable_path:
+        return await playwright.chromium.launch(headless=headless, executable_path=executable_path)
+
+    try:
+        return await playwright.chromium.launch(headless=headless, channel="chrome")
+    except Exception as chrome_error:
+        # Docker、CI 等环境常没有系统 Chrome，回退到 Playwright 自带 Chromium 保持可运行。
+        print(f"本机 Chrome 启动失败，回退到 Playwright Chromium：{chrome_error}")
+        return await playwright.chromium.launch(headless=headless)
+
+
+async def _run_query(query: str, headless: bool, max_pages: int,
+                     executable_path: str | None = None,
+                     delay_min_seconds: int = 5,
+                     delay_max_seconds: int = 15,
+                     storage_state_path: str | None = None) -> list[Listing]:
+    """搜索一次，并在同一结果集内按页采集，直到末页或达到页数上限。"""
+    if not query:
         return []
+    if max_pages < 1:
+        raise ValueError("max_pages 必须大于 0")
+    if delay_min_seconds < 0 or delay_max_seconds < delay_min_seconds:
+        raise ValueError("翻页等待时间配置无效")
     async with async_playwright() as playwright:
         executable_path = executable_path or os.environ.get("PLAYWRIGHT_EXECUTABLE_PATH")
-        browser = await playwright.chromium.launch(headless=headless, executable_path=executable_path)
+        browser = await launch_collector_browser(playwright, headless, executable_path)
         context_kwargs = {"storage_state": storage_state_path} if storage_state_path else {}
         context = await browser.new_context(**context_kwargs)
         page = await context.new_page()
         merged: dict[str, Listing] = {}
         try:
-            for index, query in enumerate(queries):
-                await search(page, query)
-                for item in await collect_listings(page, query, max_scrolls):
-                    if not item.xianyu_item_id:
-                        continue
-                    existing = merged.get(item.xianyu_item_id)
-                    if existing:
-                        existing.matched_search_queries = sorted(set(existing.matched_search_queries + item.matched_search_queries))
-                    else:
-                        merged[item.xianyu_item_id] = item
-                if index < len(queries) - 1:
-                    await page.wait_for_timeout(random.randint(delay_min_seconds, delay_max_seconds) * 1000)
+            await search(page, query)
+            for page_number in range(max_pages):
+                for item in await collect_listings(page, query):
+                    if item.xianyu_item_id:
+                        merged.setdefault(item.xianyu_item_id, item)
+                if page_number == max_pages - 1:
+                    break
+                next_page = await find_next_page(page)
+                if next_page is None:
+                    break
+                await pause_between_pages(page, delay_min_seconds, delay_max_seconds)
+                await next_page.click()
+                await page.wait_for_timeout(1_000)
+                await ensure_page_is_usable(page)
+                await pause_between_pages(page, delay_min_seconds, delay_max_seconds)
         finally:
             await context.close()
             await browser.close()
         return list(merged.values())
+
+
+async def run_query(query: str, headless: bool, max_pages: int,
+                    executable_path: str | None = None,
+                    delay_min_seconds: int = 5,
+                    delay_max_seconds: int = 15,
+                    storage_state_path: str | None = None) -> list[Listing]:
+    """以三类业务异常向上层暴露采集结果，避免普通故障误触发账号冷却。"""
+    try:
+        return await _run_query(
+            query,
+            headless,
+            max_pages,
+            executable_path,
+            delay_min_seconds,
+            delay_max_seconds,
+            storage_state_path,
+        )
+    except (LoginRequiredError, AccessLimitedError, CollectionError):
+        raise
+    except Exception as exc:
+        raise CollectionError(f"闲鱼采集发生普通异常：{type(exc).__name__}: {exc}") from exc
 
 
 def main() -> int:
@@ -300,12 +353,12 @@ def main() -> int:
     if not keyword:
         print("商品搜索词不能为空。", file=sys.stderr)
         return 2
-    if args.max_scrolls < 1:
-        print("--max-scrolls 必须大于 0。", file=sys.stderr)
+    if args.max_pages < 1:
+        print("--max-pages 必须大于 0。", file=sys.stderr)
         return 2
 
     try:
-        listings = asyncio.run(run(keyword, args.headless, args.max_scrolls))
+        listings = asyncio.run(run_query(keyword, args.headless, args.max_pages))
     except SearchPageError as exc:
         print(f"采集失败：{exc}", file=sys.stderr)
         return 1
