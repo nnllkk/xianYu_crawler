@@ -56,3 +56,5 @@ class XianyuAccountResponse(BaseModel):
     cooldown_until: datetime | None
     last_used_at: datetime | None
     is_enabled: bool
+    state_file: str
+    state_exists: bool

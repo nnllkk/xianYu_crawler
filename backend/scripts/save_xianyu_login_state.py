@@ -23,9 +23,12 @@ async def save_login_state(name: str) -> Path:
     state_path = account_service.state_path_for(name)
 
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(
-            headless=False, executable_path=settings.playwright_executable_path
-        )
+        try:
+            browser = await playwright.chromium.launch(headless=False, channel="chrome")
+        except Exception:
+            browser = await playwright.chromium.launch(
+                headless=False, executable_path=settings.playwright_executable_path
+            )
         context = await browser.new_context()
         page = await context.new_page()
         await page.goto("https://www.goofish.com/", wait_until="domcontentloaded")

@@ -1,6 +1,9 @@
 import asyncio
+import logging
+import threading
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -14,6 +17,15 @@ from .services.xianyu_accounts import XianyuAccountService
 from .services.task_runner import TaskRunner
 
 router = APIRouter(prefix="/api")
+logger = logging.getLogger(__name__)
+
+
+def _run_manual_task(rule_id: str, task_id: str) -> None:
+    """在独立线程和事件循环执行采集，避免 Playwright 阻塞 FastAPI 请求循环。"""
+    try:
+        asyncio.run(get_runner().run(rule_id, task_id))
+    except Exception:
+        logger.exception("manual task failed", extra={"rule_id": rule_id, "task_id": task_id})
 
 
 def get_runner() -> TaskRunner:
@@ -21,9 +33,20 @@ def get_runner() -> TaskRunner:
     return TaskRunner(settings, LLMService(ProviderFactory.create(settings, settings.llm_provider), settings))
 
 
+def serialize_xianyu_account(account: XianyuAccount) -> dict:
+    return {
+        "id": account.id, "name": account.name, "status": account.status,
+        "failure_count": account.failure_count, "last_error": account.last_error,
+        "cooldown_until": account.cooldown_until, "last_used_at": account.last_used_at,
+        "is_enabled": account.is_enabled, "state_file": Path(account.state_path).name,
+        "state_exists": Path(account.state_path).is_file(),
+    }
+
+
 @router.get("/xianyu-accounts", response_model=list[XianyuAccountResponse])
 def list_xianyu_accounts(session: Session = Depends(get_session)):
-    return session.scalars(select(XianyuAccount).order_by(XianyuAccount.created_at.desc())).all()
+    accounts = session.scalars(select(XianyuAccount).order_by(XianyuAccount.created_at.desc())).all()
+    return [serialize_xianyu_account(account) for account in accounts]
 
 
 @router.post("/xianyu-accounts", response_model=XianyuAccountResponse)
@@ -35,7 +58,12 @@ def create_xianyu_account(payload: XianyuAccountCreate, session: Session = Depen
     session.add(account)
     session.commit()
     session.refresh(account)
-    return account
+    account_id = account.id
+    threading.Thread(
+        target=lambda: asyncio.run(XianyuAccountService(get_settings()).capture_login_state(account_id)),
+        name=f"xianyu-login-{account_id[:8]}", daemon=True,
+    ).start()
+    return serialize_xianyu_account(account)
 
 
 @router.post("/xianyu-accounts/{account_id}/enable")
@@ -56,6 +84,22 @@ def disable_xianyu_account(account_id: str, session: Session = Depends(get_sessi
     account.is_enabled = False
     session.commit()
     return {"id": account.id, "is_enabled": False}
+
+
+@router.delete("/xianyu-accounts/{account_id}")
+def delete_xianyu_account(account_id: str, session: Session = Depends(get_session)):
+    account = session.get(XianyuAccount, account_id)
+    if not account:
+        raise HTTPException(404, "账号不存在")
+    state_path = Path(account.state_path).resolve()
+    state_root = Path(get_settings().xianyu_state_dir).resolve()
+    if state_path.parent != state_root:
+        raise HTTPException(400, "登录状态文件路径不在允许删除的目录内")
+    if state_path.is_file():
+        state_path.unlink()
+    session.delete(account)
+    session.commit()
+    return {"id": account_id, "deleted": True}
 
 
 def serialize_rule(rule: WatchRule) -> RuleResponse:
@@ -104,10 +148,13 @@ def update_rule(rule_id: str, payload: RuleCreate, session: Session = Depends(ge
 async def run_rule(rule_id: str, session: Session = Depends(get_session)):
     if not session.get(WatchRule, rule_id):
         raise HTTPException(404, "规则不存在")
+    if rule_id in TaskRunner._running:
+        raise HTTPException(409, "该规则已有任务正在执行，请等待当前任务结束")
     task = TaskRun(rule_id=rule_id, status="pending", stage="pending")
     session.add(task)
     session.commit()
-    asyncio.create_task(get_runner().run(rule_id, task.id))
+    threading.Thread(target=_run_manual_task, args=(rule_id, task.id),
+                      name=f"manual-task-{task.id[:8]}", daemon=True).start()
     return task
 
 
@@ -142,12 +189,17 @@ def get_task(task_id: str, session: Session = Depends(get_session)):
     return task
 
 
-@router.get("/rules/{rule_id}/tasks", response_model=list[TaskResponse])
-def list_rule_tasks(rule_id: str, session: Session = Depends(get_session)):
+@router.get("/rules/{rule_id}/tasks")
+def list_rule_tasks(rule_id: str, page: int = Query(1, ge=1), page_size: int = Query(8, ge=1, le=50),
+                    session: Session = Depends(get_session)):
     if not session.get(WatchRule, rule_id):
         raise HTTPException(404, "规则不存在")
-    return session.scalars(select(TaskRun).where(TaskRun.rule_id == rule_id)
-                           .order_by(TaskRun.created_at.desc())).all()
+    base = select(TaskRun).where(TaskRun.rule_id == rule_id).order_by(TaskRun.created_at.desc())
+    # 使用独立 count 查询，避免把全部历史记录加载到内存后再切片。
+    from sqlalchemy import func
+    total = session.scalar(select(func.count()).select_from(TaskRun).where(TaskRun.rule_id == rule_id)) or 0
+    items = session.scalars(base.offset((page - 1) * page_size).limit(page_size)).all()
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 @router.get("/rules/{rule_id}/history")
