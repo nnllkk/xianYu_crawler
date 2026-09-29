@@ -54,6 +54,24 @@ class RuleRecipient(Base):
     rule: Mapped[WatchRule] = relationship(back_populates="recipients")
 
 
+class XianyuAccount(Base):
+    """闲鱼登录态索引；敏感 Cookie 只存储在本地 storage_state JSON 文件中。"""
+
+    __tablename__ = "xianyu_accounts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    state_path: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="needs_login")
+    failure_count: Mapped[int] = mapped_column(default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now, onupdate=beijing_now)
+
+
 class Listing(Base):
     __tablename__ = "listings"
 
@@ -79,6 +97,7 @@ class TaskRun(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     rule_id: Mapped[str] = mapped_column(ForeignKey("watch_rules.id", ondelete="CASCADE"))
+    xianyu_account_id: Mapped[str | None] = mapped_column(ForeignKey("xianyu_accounts.id", ondelete="SET NULL"))
     status: Mapped[str] = mapped_column(String(32), default="pending")
     stage: Mapped[str] = mapped_column(String(32), default="pending")
     search_queries: Mapped[list[str] | None] = mapped_column(JSON)

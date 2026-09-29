@@ -6,6 +6,24 @@
 
 详细的技术设计、数据结构和筛选流程见 [PROJECT_DESIGN.md](PROJECT_DESIGN.md)。
 
+## 闲鱼登录状态与多账号
+
+采集使用 Playwright `storage_state` JSON，不使用浏览器 profile，也不保存闲鱼密码。首次使用前，为每个账号执行：
+
+```bash
+.venv/bin/python backend/scripts/save_xianyu_login_state.py account-1
+```
+
+脚本会打开可见浏览器，请手动完成登录和平台要求的验证，确认页面可正常访问后回车保存状态。重复执行并使用不同名称即可保存多个账号。状态文件保存在 `backend/data/xianyu_states/`，已被 Git 忽略。
+
+执行数据库迁移后，账号会自动登记为可用状态；也可以通过 `/api/xianyu-accounts` 查看和启停账号。任务只使用存在状态文件且处于 `active` 的账号。若当前会话触发登录、验证码或非法访问，账号会进入冷却，任务尝试下一个已授权账号；所有账号不可用时任务停止并记录原因。账号切换用于管理多个已获授权的登录会话，不用于规避平台验证。
+
+迁移命令（需先确认 `.env` 中的 `DATABASE_URL` 可连接）：
+
+```bash
+.venv/bin/alembic upgrade head
+```
+
 ## 首次准备
 
 需要已安装并运行：MySQL、Ollama、Python 3.11+、Node.js 与 npm。

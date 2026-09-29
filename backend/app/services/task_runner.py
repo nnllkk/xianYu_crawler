@@ -9,9 +9,10 @@ from ..config import Settings
 from ..database import SessionLocal
 from ..llm.service import LLMService
 from ..models import Listing, NotificationLog, NotificationState, TaskRun, WatchRule, beijing_now, to_beijing_naive
-from .collector import CollectorService
+from .collector import CollectorService, SearchPageError
 from .filtering import deterministic_filter
 from .mailer import Mailer
+from .xianyu_accounts import XianyuAccountService
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ class TaskRunner:
         self.llm = llm
         self.collector = CollectorService(settings)
         self.mailer = Mailer(settings)
+        self.accounts = XianyuAccountService(settings)
     async def run(self, rule_id: str, task_id: str | None = None) -> str:
         with self._state_lock:
             if rule_id in self._stop_requested:
@@ -57,7 +59,25 @@ class TaskRunner:
             task.search_queries, task.stage = requirement.search_queries, "scraping"
             session.commit()
 
-            raw_items = await self.collector.search(requirement.search_queries)
+            # 只在平台明确拒绝当前会话时切换到另一个已授权账号；普通采集错误仍按任务重试处理。
+            tried_account_ids: set[str] = set()
+            raw_items = None
+            while account := self.accounts.choose_available(session, tried_account_ids):
+                tried_account_ids.add(account.id)
+                task.xianyu_account_id = account.id
+                session.commit()
+                try:
+                    raw_items = await self.collector.search(requirement.search_queries, account.state_path)
+                except SearchPageError as exc:
+                    self.accounts.mark_access_limited(account, str(exc))
+                    session.commit()
+                    logger.warning("xianyu account entered cooldown", extra={"account_id": account.id, "reason": str(exc)})
+                    continue
+                self.accounts.mark_success(account)
+                session.commit()
+                break
+            if raw_items is None:
+                raise RuntimeError("没有可用的闲鱼登录状态；请完成登录，或等待受限账号冷却后再试。")
             self._raise_if_stopped(rule_id)
             task.scraped_count = len(raw_items)
             session.commit()

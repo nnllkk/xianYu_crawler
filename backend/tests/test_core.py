@@ -1,5 +1,6 @@
 import sys
 import asyncio
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +15,7 @@ from app.config import Settings  # noqa: E402
 from app.llm.factory import ProviderFactory  # noqa: E402
 from app.llm.service import LLMService  # noqa: E402
 from app.database import Base  # noqa: E402
-from app.models import NotificationState, TaskRun, WatchRule, RuleRecipient  # noqa: E402
+from app.models import NotificationState, TaskRun, WatchRule, RuleRecipient, XianyuAccount  # noqa: E402
 from app.services.task_runner import TaskRunner, TaskStoppedError  # noqa: E402
 import app.services.task_runner as task_runner_module  # noqa: E402
 from app.services.filtering import parse_budget  # noqa: E402
@@ -61,7 +62,12 @@ def test_requirement_budget_is_deterministic_when_model_omits_it() -> None:
     assert result.original_input.product == "MacBook"
 
 
-def test_offline_task_pipeline(monkeypatch) -> None:
+def _add_active_account(session: Session, state_path: Path) -> None:
+    state_path.write_text(json.dumps({"cookies": [], "origins": []}), encoding="utf-8")
+    session.add(XianyuAccount(name="test-account", state_path=str(state_path), status="active"))
+
+
+def test_offline_task_pipeline(monkeypatch, tmp_path: Path) -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
@@ -72,11 +78,12 @@ def test_offline_task_pipeline(monkeypatch) -> None:
         rule = WatchRule(product="MacBook", extra_conditions="16寸+32G", budget="1-10")
         rule.recipients = [RuleRecipient(email="to@test")]
         session.add(rule)
+        _add_active_account(session, tmp_path / "test-account.json")
         session.commit()
         rule_id = rule.id
 
     runner = TaskRunner(settings, service)
-    runner.collector = SimpleNamespace(search=lambda queries: asyncio.sleep(0, result=[SimpleNamespace(
+    runner.collector = SimpleNamespace(search=lambda queries, _state_path: asyncio.sleep(0, result=[SimpleNamespace(
         xianyu_item_id="item-1", title="MacBook 16寸 32G", price=5.0, url="https://example.test/item-1",
         image_url=None, seller_location="广东", raw_data={"card_text": "16寸 32G"},
         matched_search_queries=["MacBook"],
@@ -94,7 +101,7 @@ def test_offline_task_pipeline(monkeypatch) -> None:
     assert sent and "item-1" in sent[0][2]
 
 
-def test_stop_marks_task_stopped(monkeypatch) -> None:
+def test_stop_marks_task_stopped(monkeypatch, tmp_path: Path) -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
@@ -105,12 +112,13 @@ def test_stop_marks_task_stopped(monkeypatch) -> None:
         rule = WatchRule(product="x", budget="1-2")
         rule.recipients = [RuleRecipient(email="to@test")]
         session.add(rule)
+        _add_active_account(session, tmp_path / "test-account.json")
         session.commit()
         rule_id = rule.id
 
     runner = TaskRunner(settings, service)
 
-    async def stop_during_search(_queries):
+    async def stop_during_search(_queries, _state_path):
         TaskRunner.request_stop(rule_id)
         return []
 

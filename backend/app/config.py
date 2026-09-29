@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     search_delay_min_seconds: int = 5
     search_delay_max_seconds: int = 15
     max_task_retries: int = 3
+    xianyu_state_dir: str = str(ROOT_DIR / "data" / "xianyu_states")
+    xianyu_account_cooldown_minutes: int = 60
     smtp_host: str = ""
     smtp_port: int = 465
     smtp_username: str = ""
@@ -67,5 +69,7 @@ def get_settings() -> Settings:
             "schedule_max_interval_minutes": values.get("scheduler", {}).get("max_interval_minutes", settings.schedule_max_interval_minutes),
             "search_delay_min_seconds": values.get("collector", {}).get("search_delay_min_seconds", settings.search_delay_min_seconds),
             "search_delay_max_seconds": values.get("collector", {}).get("search_delay_max_seconds", settings.search_delay_max_seconds),
+            "xianyu_state_dir": str((ROOT_DIR / values.get("xianyu", {}).get("state_dir", "data/xianyu_states")).resolve()),
+            "xianyu_account_cooldown_minutes": values.get("xianyu", {}).get("account_cooldown_minutes", settings.xianyu_account_cooldown_minutes),
         })
     return settings

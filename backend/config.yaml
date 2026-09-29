@@ -30,3 +30,6 @@ scheduler:
 collector:
   search_delay_min_seconds: 5
   search_delay_max_seconds: 15
+xianyu:
+  state_dir: data/xianyu_states
+  account_cooldown_minutes: 60

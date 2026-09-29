@@ -8,8 +8,9 @@ from .config import get_settings
 from .database import get_session
 from .llm.service import LLMService
 from .llm.factory import ProviderFactory
-from .models import NotificationLog, RuleRecipient, TaskRun, WatchRule
-from .schemas import RuleCreate, RuleResponse, TaskResponse
+from .models import NotificationLog, RuleRecipient, TaskRun, WatchRule, XianyuAccount
+from .schemas import RuleCreate, RuleResponse, TaskResponse, XianyuAccountCreate, XianyuAccountResponse
+from .services.xianyu_accounts import XianyuAccountService
 from .services.task_runner import TaskRunner
 
 router = APIRouter(prefix="/api")
@@ -18,6 +19,43 @@ router = APIRouter(prefix="/api")
 def get_runner() -> TaskRunner:
     settings = get_settings()
     return TaskRunner(settings, LLMService(ProviderFactory.create(settings, settings.llm_provider), settings))
+
+
+@router.get("/xianyu-accounts", response_model=list[XianyuAccountResponse])
+def list_xianyu_accounts(session: Session = Depends(get_session)):
+    return session.scalars(select(XianyuAccount).order_by(XianyuAccount.created_at.desc())).all()
+
+
+@router.post("/xianyu-accounts", response_model=XianyuAccountResponse)
+def create_xianyu_account(payload: XianyuAccountCreate, session: Session = Depends(get_session)):
+    if session.scalar(select(XianyuAccount).where(XianyuAccount.name == payload.name)):
+        raise HTTPException(409, "账号名称已存在")
+    state_path = XianyuAccountService(get_settings()).state_path_for(payload.name)
+    account = XianyuAccount(name=payload.name, state_path=str(state_path), status="needs_login")
+    session.add(account)
+    session.commit()
+    session.refresh(account)
+    return account
+
+
+@router.post("/xianyu-accounts/{account_id}/enable")
+def enable_xianyu_account(account_id: str, session: Session = Depends(get_session)):
+    account = session.get(XianyuAccount, account_id)
+    if not account:
+        raise HTTPException(404, "账号不存在")
+    account.is_enabled = True
+    session.commit()
+    return {"id": account.id, "is_enabled": True}
+
+
+@router.post("/xianyu-accounts/{account_id}/disable")
+def disable_xianyu_account(account_id: str, session: Session = Depends(get_session)):
+    account = session.get(XianyuAccount, account_id)
+    if not account:
+        raise HTTPException(404, "账号不存在")
+    account.is_enabled = False
+    session.commit()
+    return {"id": account.id, "is_enabled": False}
 
 
 def serialize_rule(rule: WatchRule) -> RuleResponse:

@@ -263,14 +263,16 @@ async def run(keyword: str, headless: bool, max_scrolls: int,
 async def run_queries(queries: list[str], headless: bool, max_scrolls: int,
                       executable_path: str | None = None,
                       delay_min_seconds: int = 5,
-                      delay_max_seconds: int = 15) -> list[Listing]:
+                      delay_max_seconds: int = 15,
+                      storage_state_path: str | None = None) -> list[Listing]:
     """在一个浏览器上下文中串行执行多条搜索，降低短时间内建立多个会话的概率。"""
     if not queries:
         return []
     async with async_playwright() as playwright:
         executable_path = executable_path or os.environ.get("PLAYWRIGHT_EXECUTABLE_PATH")
         browser = await playwright.chromium.launch(headless=headless, executable_path=executable_path)
-        context = await browser.new_context()
+        context_kwargs = {"storage_state": storage_state_path} if storage_state_path else {}
+        context = await browser.new_context(**context_kwargs)
         page = await context.new_page()
         merged: dict[str, Listing] = {}
         try:

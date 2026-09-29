@@ -39,3 +39,20 @@ class TaskResponse(BaseModel):
     error_message: str | None
     started_at: datetime | None
     finished_at: datetime | None
+
+
+class XianyuAccountCreate(BaseModel):
+    name: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+
+
+class XianyuAccountResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: str
+    name: str
+    status: str
+    failure_count: int
+    last_error: str | None
+    cooldown_until: datetime | None
+    last_used_at: datetime | None
+    is_enabled: bool
