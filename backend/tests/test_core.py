@@ -18,6 +18,7 @@ from app.database import Base  # noqa: E402
 from app.models import NotificationState, TaskRun, WatchRule, RuleRecipient, XianyuAccount, beijing_now  # noqa: E402
 from app.services.task_runner import TaskRunner, TaskStoppedError  # noqa: E402
 from app.services.xianyu_accounts import XianyuAccountService  # noqa: E402
+from app.api import sync_rule_recipients  # noqa: E402
 import app.services.task_runner as task_runner_module  # noqa: E402
 import app.services.collector as collector_module  # noqa: E402
 import search_xianyu as search_xianyu_module  # noqa: E402
@@ -150,6 +151,23 @@ def test_expired_account_cooldown_becomes_active(tmp_path: Path) -> None:
         assert service.choose_available(session, set()) == account
 
 
+def test_rule_recipient_update_preserves_unchanged_email(tmp_path: Path) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        rule = WatchRule(product="MacBook", budget="1-2")
+        rule.recipients = [RuleRecipient(email="same@example.com")]
+        session.add(rule)
+        session.commit()
+        preserved_id = rule.recipients[0].id
+
+        sync_rule_recipients(rule, ["same@example.com", "new@example.com"])
+        session.commit()
+        recipients = {recipient.email: recipient.id for recipient in rule.recipients}
+        assert set(recipients) == {"same@example.com", "new@example.com"}
+        assert recipients["same@example.com"] == preserved_id
+
+
 def _run_account_failure_case(monkeypatch, tmp_path: Path, error: Exception) -> tuple[XianyuAccount, TaskRun]:
     """运行一条采集失败任务，供账号状态分类测试复用。"""
     engine = create_engine("sqlite+pysqlite:///:memory:")
@@ -238,6 +256,59 @@ def test_collector_wraps_unexpected_error_as_general_collection_error(monkeypatc
         assert "浏览器启动失败" in str(exc)
     else:
         raise AssertionError("未知采集错误必须包装为 CollectionError")
+
+
+def test_collect_waits_for_search_result_cards() -> None:
+    class DelayedCards:
+        first = None
+
+        def __init__(self) -> None:
+            self.first = self
+            self.waited = False
+
+        async def wait_for(self, **kwargs) -> None:
+            self.waited = kwargs == {"state": "visible", "timeout": 10_000}
+
+        async def count(self) -> int:
+            return 30
+
+    class Page:
+        def __init__(self) -> None:
+            self.cards = DelayedCards()
+
+        def locator(self, selector: str) -> DelayedCards:
+            assert selector == search_xianyu_module.CARD_SELECTORS[0]
+            return self.cards
+
+    page = Page()
+    cards = asyncio.run(search_xianyu_module.get_cards(page))
+    assert cards is page.cards
+    assert page.cards.waited
+
+
+def test_next_page_selector_targets_goofish_right_arrow() -> None:
+    assert search_xianyu_module.NEXT_PAGE_SELECTORS[0] == (
+        'button[class*="search-pagination-arrow-container"]:has('
+        '[class*="search-pagination-arrow-right"])'
+    )
+
+
+def test_wait_for_next_page_results_waits_for_new_first_link() -> None:
+    class Page:
+        def __init__(self) -> None:
+            self.expression = None
+            self.kwargs = None
+
+        async def wait_for_function(self, expression, **kwargs) -> None:
+            self.expression = expression
+            self.kwargs = kwargs
+
+    page = Page()
+    asyncio.run(
+        search_xianyu_module.wait_for_next_page_results(page, "/item?id=old")
+    )
+    assert "firstCard.getAttribute('href') !== previousHref" in page.expression
+    assert page.kwargs == {"arg": "/item?id=old", "timeout": 10_000}
 
 
 def test_offline_task_pipeline(monkeypatch, tmp_path: Path) -> None:

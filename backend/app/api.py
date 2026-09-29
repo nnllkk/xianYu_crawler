@@ -130,13 +130,27 @@ def serialize_rule(rule: WatchRule) -> RuleResponse:
     )
 
 
+def sync_rule_recipients(rule: WatchRule, emails: list[str]) -> None:
+    """仅变更收件人差异，避免同邮箱更新时触发唯一键冲突。"""
+    desired_emails = list(dict.fromkeys(emails))
+    desired_set = set(desired_emails)
+    existing_by_email = {recipient.email: recipient for recipient in rule.recipients}
+
+    rule.recipients[:] = [
+        recipient for recipient in rule.recipients if recipient.email in desired_set
+    ]
+    for email in desired_emails:
+        if email not in existing_by_email:
+            rule.recipients.append(RuleRecipient(email=email))
+
+
 @router.post("/rules", response_model=RuleResponse)
 def create_rule(payload: RuleCreate, session: Session = Depends(get_session)):
     requirement = parse_rule_requirement(payload)
     rule = WatchRule(product=payload.product, extra_conditions=payload.extra_conditions, budget=payload.budget,
                      parsed_requirement=requirement.model_dump(mode="json"), interval_minutes=payload.interval_minutes,
                      is_enabled=payload.enabled)
-    rule.recipients = [RuleRecipient(email=str(email)) for email in payload.emails]
+    sync_rule_recipients(rule, [str(email) for email in payload.emails])
     session.add(rule)
     session.commit()
     session.refresh(rule)
@@ -157,11 +171,22 @@ def update_rule(rule_id: str, payload: RuleCreate, session: Session = Depends(ge
     rule.product, rule.extra_conditions, rule.budget = payload.product, payload.extra_conditions, payload.budget
     rule.interval_minutes, rule.is_enabled = payload.interval_minutes, payload.enabled
     rule.parsed_requirement = requirement.model_dump(mode="json")
-    rule.recipients.clear()
-    rule.recipients.extend(RuleRecipient(email=str(email)) for email in payload.emails)
+    sync_rule_recipients(rule, [str(email) for email in payload.emails])
     session.commit()
     session.refresh(rule)
     return serialize_rule(rule)
+
+
+@router.delete("/rules/{rule_id}")
+def delete_rule(rule_id: str, session: Session = Depends(get_session)):
+    rule = session.get(WatchRule, rule_id)
+    if not rule:
+        raise HTTPException(404, "规则不存在")
+    # 先发出停止信号，避免已开始的任务继续为即将删除的规则写入记录。
+    TaskRunner.request_stop(rule_id)
+    session.delete(rule)
+    session.commit()
+    return {"id": rule_id, "deleted": True}
 
 
 @router.post("/rules/{rule_id}/run", response_model=TaskResponse)

@@ -90,10 +90,14 @@ const stages: Record<string, string> = {
   stopped: "已停止",
 };
 const parts = (s: string) =>
-  s
-    .split(/[,，\n]/)
-    .map((x) => x.trim())
-    .filter(Boolean);
+  Array.from(
+    new Set(
+      s
+        .split(/[,，\n]/)
+        .map((x) => x.trim())
+        .filter(Boolean),
+    ),
+  );
 // 后端以 MySQL DATETIME 保存北京时间；无偏移字符串须显式按 +08:00 解释。
 const date = (s: string | null) =>
   s
@@ -302,6 +306,31 @@ export default function Home() {
       setNotice("账号和登录状态 JSON 已删除");
     } catch (err) {
       setNotice(err instanceof Error ? err.message : "删除账号失败");
+    } finally {
+      setBusy("");
+    }
+  }
+  async function deleteRule(rule: Rule) {
+    if (!window.confirm(`确定删除监控规则“${rule.product}”吗？相关运行记录也会删除。`))
+      return;
+    setBusy(`delete-rule-${rule.id}`);
+    try {
+      await call(`/api/rules/${rule.id}`, { method: "DELETE" });
+      if (editing === rule.id) {
+        setEditing(null);
+        setDraft(empty);
+      }
+      if (picked === rule.id) {
+        setPicked(null);
+        localStorage.removeItem("xianyu-picked-rule");
+        setTasks([]);
+        setLogs([]);
+        setTaskTotal(0);
+      }
+      await load();
+      setNotice("规则已删除");
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "删除规则失败");
     } finally {
       setBusy("");
     }
@@ -564,11 +593,11 @@ export default function Home() {
                       onChange={(e) => change("enabled", e.target.checked)}
                     />
                     <span />
-                    创建后自动启用
+                    {editing ? "保存后保持启用状态" : "创建后自动启用"}
                   </label>
                   <button className="primary" disabled={busy === "save"}>
                     {editing ? <Save size={15} /> : <Plus size={15} />}
-                    {editing ? "保存规则" : "创建规则"}
+                    {editing ? "保存修改" : "创建规则"}
                   </button>
                 </div>
               </form>
@@ -639,6 +668,17 @@ export default function Home() {
                     <div className="actions">
                       <button title="编辑规则" onClick={() => edit(r)}>
                         <Edit3 size={16} />
+                      </button>
+                      <button
+                        title="删除规则"
+                        className="danger"
+                        disabled={busy === `delete-rule-${r.id}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void deleteRule(r);
+                        }}
+                      >
+                        <Trash2 size={16} />
                       </button>
                       <button
                         title="立即执行"

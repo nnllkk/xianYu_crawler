@@ -36,6 +36,7 @@ CARD_SELECTORS = (
     '[class*="FeedCard"]',
 )
 NEXT_PAGE_SELECTORS = (
+    'button[class*="search-pagination-arrow-container"]:has([class*="search-pagination-arrow-right"])',
     'button[aria-label*="下一页"]',
     'a[aria-label*="下一页"]',
     '[role="button"][aria-label*="下一页"]',
@@ -135,7 +136,6 @@ async def search(page: Page, keyword: str) -> None:
     await search_input.fill(keyword)
     await search_input.press("Enter")
     await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(1_000)
     await ensure_page_is_usable(page)
 
 
@@ -176,7 +176,17 @@ def extract_item_id(url: str | None) -> str | None:
 
 
 async def get_cards(page: Page) -> Locator:
-    for selector in CARD_SELECTORS:
+    # 搜索页在 DOMContentLoaded 后才异步渲染商品卡片。不能只依赖固定等待，
+    # 否则慢一次渲染会被静默记录成“成功但 0 条商品”。
+    primary_cards = page.locator(CARD_SELECTORS[0])
+    try:
+        await primary_cards.first.wait_for(state="visible", timeout=10_000)
+    except PlaywrightTimeoutError:
+        pass
+    if await primary_cards.count():
+        return primary_cards
+
+    for selector in CARD_SELECTORS[1:]:
         cards = page.locator(selector)
         if await cards.count():
             return cards
@@ -271,6 +281,21 @@ async def pause_between_pages(page: Page, minimum_seconds: int, maximum_seconds:
     await page.wait_for_timeout(random.randint(minimum_seconds, maximum_seconds) * 1000)
 
 
+async def wait_for_next_page_results(page: Page, previous_first_href: str | None) -> None:
+    """等待分页结果换页，避免下一轮重复采集仍留在 DOM 中的上一页商品。"""
+    try:
+        await page.wait_for_function(
+            """previousHref => {
+                const firstCard = document.querySelector("a[href*='/item?id=']");
+                return Boolean(firstCard && firstCard.getAttribute('href') !== previousHref);
+            }""",
+            arg=previous_first_href,
+            timeout=10_000,
+        )
+    except PlaywrightTimeoutError as exc:
+        raise CollectionError("翻页后未等到新的商品结果，页面可能未完成更新。") from exc
+
+
 async def launch_collector_browser(playwright: Any, headless: bool, executable_path: str | None) -> Any:
     """优先复用本机 Chrome，保持登录采集和搜索采集处于同一浏览器通道。"""
     if executable_path:
@@ -314,9 +339,16 @@ async def _run_query(query: str, headless: bool, max_pages: int,
                 next_page = await find_next_page(page)
                 if next_page is None:
                     break
+                # 闲鱼将分页控件放在结果页底部，必须先滚动到可视区域才能稳定点击。
+                await next_page.scroll_into_view_if_needed()
                 await pause_between_pages(page, delay_min_seconds, delay_max_seconds)
+                previous_first_href = await get_attribute(
+                    (await get_cards(page)).first,
+                    "href",
+                )
                 await next_page.click()
-                await page.wait_for_timeout(1_000)
+                await page.wait_for_load_state("domcontentloaded")
+                await wait_for_next_page_results(page, previous_first_href)
                 await ensure_page_is_usable(page)
                 await pause_between_pages(page, delay_min_seconds, delay_max_seconds)
         finally:
