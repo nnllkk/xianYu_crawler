@@ -50,6 +50,19 @@ def test_collector_uses_headed_browser_by_default(monkeypatch) -> None:
     assert observed == {"query": "MacBook", "headless": False, "max_pages": 20}
 
 
+def test_pipeline_limits_are_configurable() -> None:
+    settings = Settings(
+        collector_max_pages=7,
+        collector_page_queue_size=3,
+        candidate_pool_size=12,
+        initial_assessment_concurrency=4,
+    )
+    assert settings.collector_max_pages == 7
+    assert settings.collector_page_queue_size == 3
+    assert settings.candidate_pool_size == 12
+    assert settings.initial_assessment_concurrency == 4
+
+
 def test_collector_prefers_chrome_channel() -> None:
     calls = []
 
@@ -378,7 +391,10 @@ def test_task_ranks_full_pool_before_collection_finishes(monkeypatch, tmp_path: 
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
     monkeypatch.setattr(task_runner_module, "SessionLocal", session_factory)
-    settings = Settings(llm_provider="mock", llm_retry_count=0, smtp_host="smtp.test", smtp_from="from@test")
+    settings = Settings(
+        llm_provider="mock", llm_retry_count=0, smtp_host="smtp.test", smtp_from="from@test",
+        candidate_pool_size=2, initial_assessment_concurrency=2,
+    )
     service = LLMService(ProviderFactory.create(settings, "mock"), settings)
     with Session(engine) as session:
         rule = WatchRule(product="MacBook", budget="1-10")
@@ -402,9 +418,8 @@ def test_task_ranks_full_pool_before_collection_finishes(monkeypatch, tmp_path: 
         return []
 
     runner = TaskRunner(settings, service)
-    assert runner.CANDIDATE_POOL_SIZE == 20
-    assert runner.INITIAL_ASSESSMENT_CONCURRENCY == 2
-    runner.CANDIDATE_POOL_SIZE = 2
+    assert settings.candidate_pool_size == 2
+    assert settings.initial_assessment_concurrency == 2
     runner.collector = SimpleNamespace(search_pages=collect_pages)
     runner.mailer = SimpleNamespace(send=lambda *_args: None)
     ranked_batches = []

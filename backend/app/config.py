@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     page_delay_min_seconds: int = 5
     page_delay_max_seconds: int = 15
     collector_headless: bool = False
+    collector_max_pages: int = Field(default=20, ge=1)
+    collector_page_queue_size: int = Field(default=2, ge=1)
+    candidate_pool_size: int = Field(default=20, ge=1)
+    initial_assessment_concurrency: int = Field(default=2, ge=1)
     max_task_retries: int = 3
     xianyu_state_dir: str = str(ROOT_DIR / "data" / "xianyu_states")
     xianyu_account_cooldown_minutes: int = 60
@@ -71,6 +75,11 @@ def get_settings() -> Settings:
             "page_delay_min_seconds": values.get("collector", {}).get("page_delay_min_seconds", settings.page_delay_min_seconds),
             "page_delay_max_seconds": values.get("collector", {}).get("page_delay_max_seconds", settings.page_delay_max_seconds),
             "collector_headless": values.get("collector", {}).get("headless", settings.collector_headless),
+            "collector_max_pages": values.get("collector", {}).get("max_pages", settings.collector_max_pages),
+            "collector_page_queue_size": values.get("collector", {}).get("page_queue_size", settings.collector_page_queue_size),
+            "candidate_pool_size": values.get("analysis", {}).get("candidate_pool_size", settings.candidate_pool_size),
+            "initial_assessment_concurrency": values.get(
+                "analysis", {}).get("initial_assessment_concurrency", settings.initial_assessment_concurrency),
             "xianyu_state_dir": str((ROOT_DIR / values.get("xianyu", {}).get("state_dir", "data/xianyu_states")).resolve()),
             "xianyu_account_cooldown_minutes": values.get("xianyu", {}).get("account_cooldown_minutes", settings.xianyu_account_cooldown_minutes),
         })

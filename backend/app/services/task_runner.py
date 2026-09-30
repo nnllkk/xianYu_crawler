@@ -28,9 +28,6 @@ class TaskRunner:
     _running: set[str] = set()
     _stop_requested: set[str] = set()
     _state_lock = threading.Lock()
-    CANDIDATE_POOL_SIZE = 20
-    INITIAL_ASSESSMENT_CONCURRENCY = 2
-
     def __init__(self, settings: Settings, llm: LLMService) -> None:
         self.settings = settings
         self.llm = llm
@@ -91,11 +88,11 @@ class TaskRunner:
 
             # 采集和分析分离为两个协程：浏览器始终单线程顺序翻页，分析端通过
             # 有界队列消费已采集页面。LLM 的同步请求转入线程，避免阻塞分页等待。
-            page_queue: asyncio.Queue[list] = asyncio.Queue(maxsize=2)
+            page_queue: asyncio.Queue[list] = asyncio.Queue(maxsize=self.settings.collector_page_queue_size)
             candidate_pool: list[Listing] = []
             seen_item_ids: set[str] = set()
             consumer_error: list[Exception] = []
-            initial_assessment_limiter = asyncio.Semaphore(self.INITIAL_ASSESSMENT_CONCURRENCY)
+            initial_assessment_limiter = asyncio.Semaphore(self.settings.initial_assessment_concurrency)
 
             async def rank_and_send() -> None:
                 if not candidate_pool:
@@ -187,7 +184,7 @@ class TaskRunner:
                         continue
                     candidate_pool.append(candidate)
                     task.candidate_count += 1
-                    if len(candidate_pool) == self.CANDIDATE_POOL_SIZE:
+                    if len(candidate_pool) == self.settings.candidate_pool_size:
                         await rank_and_send()
                 session.commit()
 
