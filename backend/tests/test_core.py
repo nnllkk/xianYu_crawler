@@ -2,6 +2,8 @@ import sys
 import asyncio
 import json
 import httpx
+import logging
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -93,8 +95,8 @@ def test_collection_and_ranking_water_marks_are_hysteretic() -> None:
     assert not TaskRunner.should_pause_collection(47, 60)
     assert TaskRunner.is_collection_queue_low(12, 60)
     assert not TaskRunner.is_collection_queue_low(13, 60)
-    assert TaskRunner.should_start_ranking(70, 100)
-    assert not TaskRunner.should_start_ranking(69, 100)
+    assert TaskRunner.should_start_ranking(71, 100)
+    assert not TaskRunner.should_start_ranking(70, 100)
     assert TaskRunner.is_candidate_pool_low(20, 100)
     assert not TaskRunner.is_candidate_pool_low(21, 100)
 
@@ -238,6 +240,21 @@ def test_llm_routes_tasks_to_configured_providers() -> None:
 
     assert remote.calls == ["UserRequirement", "RankingResult"]
     assert local.calls == ["ItemAssessment"]
+
+
+def test_llm_logs_request_and_response_for_each_task(caplog) -> None:
+    settings = Settings(llm_provider="mock", llm_retry_count=0)
+    service = LLMService(ProviderFactory.create(settings, "mock"), settings)
+    caplog.set_level(logging.INFO, logger="app.llm.service")
+
+    requirement = service.parse_requirement("MacBook", "16寸", "6000-8000")
+    service.assess(requirement, {"xianyu_item_id": "1", "title": "MacBook 16寸", "price": 7000})
+    service.rank(requirement, [{"xianyu_item_id": "1", "title": "MacBook 16寸", "price": 7000}])
+
+    messages = [record.getMessage() for record in caplog.records]
+    for task_name in ("user_requirement", "item_assessment", "candidate_ranking"):
+        assert any(message.startswith(f"llm request sent task={task_name}") for message in messages)
+        assert any(message.startswith(f"llm response received task={task_name}") for message in messages)
 
 
 def test_requirement_budget_is_deterministic_when_model_omits_it() -> None:
@@ -508,7 +525,7 @@ def test_task_drains_remaining_candidates_in_final_ranking(monkeypatch, tmp_path
     monkeypatch.setattr(task_runner_module, "SessionLocal", session_factory)
     settings = Settings(
         llm_provider="mock", llm_retry_count=0, smtp_host="smtp.test", smtp_from="from@test",
-        candidate_pool_size=20, initial_assessment_concurrency=2,
+        candidate_pool_size=28, initial_assessment_concurrency=2,
     )
     service = LLMService(ProviderFactory.create(settings, "mock"), settings)
     with Session(engine) as session:
@@ -534,7 +551,7 @@ def test_task_drains_remaining_candidates_in_final_ranking(monkeypatch, tmp_path
         return []
 
     runner = TaskRunner(settings, service)
-    assert settings.candidate_pool_size == 20
+    assert settings.candidate_pool_size == 28
     assert settings.initial_assessment_concurrency == 2
     runner.collector = SimpleNamespace(search_pages=collect_pages)
     runner.mailer = SimpleNamespace(send=lambda *_args: None)
@@ -554,6 +571,63 @@ def test_task_drains_remaining_candidates_in_final_ranking(monkeypatch, tmp_path
         assert task.sent_count == 3
     assert len(ranked_batches) == 1
     assert set(ranked_batches[0]) == {"item-1", "item-2", "item-3"}
+
+
+def test_assessment_and_ranking_run_concurrently_in_candidate_mid_range(monkeypatch, tmp_path: Path) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(task_runner_module, "SessionLocal", session_factory)
+    settings = Settings(
+        llm_provider="mock", llm_retry_count=0, smtp_host="smtp.test", smtp_from="from@test",
+        candidate_pool_size=100, collector_item_queue_size=30, initial_assessment_concurrency=1,
+    )
+    service = LLMService(ProviderFactory.create(settings, "mock"), settings)
+    with Session(engine) as session:
+        rule = WatchRule(product="MacBook", budget="1-10", max_pages=1)
+        rule.recipients = [RuleRecipient(email="to@test")]
+        session.add(rule)
+        _add_active_account(session, tmp_path / "test-account.json")
+        session.commit()
+        rule_id = rule.id
+
+    def raw_item(index: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            xianyu_item_id=f"item-{index}", title=f"MacBook {index}", price=5.0,
+            url=f"https://example.test/{index}", image_url=None, seller_location="广东",
+            raw_data={"card_text": str(index)}, matched_search_queries=["MacBook"],
+            collected_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    ranking_started = threading.Event()
+    state = {"sixth_assessment_overlapped": False}
+
+    ranked_batch_sizes = []
+
+    def assess(_requirement, candidate):
+        if candidate["xianyu_item_id"] == "item-22":
+            # to_thread 会释放事件循环；排序 worker 必须能在当前初筛未完成时开始。
+            state["sixth_assessment_overlapped"] = ranking_started.wait(timeout=1)
+        return SimpleNamespace(worthwhile=True)
+
+    def rank(_requirement, candidates):
+        ranking_started.set()
+        ranked_batch_sizes.append(len(candidates))
+        return SimpleNamespace(items=[])
+
+    async def collect_pages(_query, _state_path, on_page, _max_pages):
+        await on_page([raw_item(index) for index in range(1, 24)])
+        return []
+
+    runner = TaskRunner(settings, service)
+    runner.collector = SimpleNamespace(search_pages=collect_pages)
+    runner.mailer = SimpleNamespace(send=lambda *_args: None)
+    monkeypatch.setattr(service, "assess", assess)
+    monkeypatch.setattr(service, "rank", rank)
+
+    asyncio.run(runner.run(rule_id))
+    assert state["sixth_assessment_overlapped"]
+    assert ranked_batch_sizes[0] == 20
 
 
 def test_stop_marks_task_stopped(monkeypatch, tmp_path: Path) -> None:

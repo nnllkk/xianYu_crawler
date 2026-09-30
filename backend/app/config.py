@@ -41,7 +41,8 @@ class Settings(BaseSettings):
     page_delay_max_seconds: int = 15
     collector_headless: bool = False
     collector_item_queue_size: int = Field(default=60, ge=1)
-    candidate_pool_size: int = Field(default=100, ge=20)
+    # 70% 高水位必须不低于一个 20 条的排序批次，否则会发生初筛暂停、排序无法启动的死锁。
+    candidate_pool_size: int = Field(default=100, ge=28)
     initial_assessment_concurrency: int = Field(default=2, ge=1)
     max_task_retries: int = 3
     xianyu_state_dir: str = str(ROOT_DIR / "data" / "xianyu_states")

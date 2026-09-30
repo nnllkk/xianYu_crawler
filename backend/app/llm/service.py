@@ -60,25 +60,50 @@ class LLMService:
         self.providers = providers or {settings.llm_provider: provider}
 
     def _provider_for(self, schema_name: str) -> LLMProvider:
+        return self.providers.get(self._provider_name_for(schema_name), self.provider)
+
+    def _provider_name_for(self, schema_name: str) -> str:
         task_name = {
             "UserRequirement": "user_requirement",
             "ItemAssessment": "item_assessment",
             "RankingResult": "candidate_ranking",
         }.get(schema_name)
-        provider_name = self.settings.llm_task_provider_map.get(task_name, self.settings.llm_provider)
-        return self.providers.get(provider_name, self.provider)
+        return self.settings.llm_task_provider_map.get(task_name, self.settings.llm_provider)
+
+    @staticmethod
+    def _task_name_for(schema_name: str) -> str:
+        return {
+            "UserRequirement": "user_requirement",
+            "ItemAssessment": "item_assessment",
+            "RankingResult": "candidate_ranking",
+        }.get(schema_name, schema_name)
 
     def _request(self, schema: type[T], system: str, user: str) -> T:
         last_error: Exception | None = None
+        schema_name = schema.__name__
+        task_name = self._task_name_for(schema_name)
+        provider_name = self._provider_name_for(schema_name)
         for attempt in range(self.settings.llm_retry_count + 1):
             started = time.monotonic()
             try:
-                content = self._provider_for(schema.__name__).complete_json(
-                    system=system, user=user, schema_name=schema.__name__,
+                # 记录完整提示词与业务输入，便于复现每一种 LLM 任务的模型判断。
+                # Provider 密钥仅存在于配置和环境变量中，不会写入日志。
+                logger.info(
+                    "llm request sent task=%s provider=%s attempt=%s system=%s payload=%s",
+                    task_name, provider_name, attempt + 1, system, user,
+                )
+                content = self._provider_for(schema_name).complete_json(
+                    system=system, user=user, schema_name=schema_name,
+                )
+                logger.info(
+                    "llm response received task=%s provider=%s attempt=%s response=%s",
+                    task_name, provider_name, attempt + 1, content,
                 )
                 result = schema.model_validate_json(content)
-                logger.info("llm call succeeded", extra={"schema": schema.__name__, "attempt": attempt + 1,
-                                                           "duration_ms": round((time.monotonic() - started) * 1000)})
+                logger.info(
+                    "llm call succeeded task=%s provider=%s attempt=%s duration_ms=%s",
+                    task_name, provider_name, attempt + 1, round((time.monotonic() - started) * 1000),
+                )
                 return result
             except APIStatusError as exc:
                 last_error = exc

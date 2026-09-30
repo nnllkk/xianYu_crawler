@@ -40,7 +40,7 @@ collector:
   page_delay_min_seconds: 5
   page_delay_max_seconds: 15
 analysis:
-  # 候选队列容量。达到 70% 暂停初筛并排序，降到 20% 后恢复初筛。
+  # 候选队列容量。超过 70% 仅排序；20% 至 70% 初筛和排序并行；低于等于 20% 仅初筛。
   candidate_pool_size: 100
   initial_assessment_concurrency: 2 # 初始次判断并发数
 xianyu:

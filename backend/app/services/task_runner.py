@@ -81,8 +81,8 @@ class TaskRunner:
 
     @classmethod
     def should_start_ranking(cls, candidate_count: int, candidate_capacity: int) -> bool:
-        """候选池达到 70% 后暂停初筛，优先释放候选池。"""
-        return candidate_count >= candidate_capacity * cls.RANKING_START_THRESHOLD
+        """候选池超过 70% 后暂停初筛，优先释放候选池。"""
+        return candidate_count > candidate_capacity * cls.RANKING_START_THRESHOLD
 
     @classmethod
     def is_candidate_pool_low(cls, candidate_count: int, candidate_capacity: int) -> bool:
@@ -119,11 +119,12 @@ class TaskRunner:
             # LLM 是同步客户端，放进线程执行，避免阻塞浏览器等待与队列恢复。
             item_queue: asyncio.Queue[object | None] = asyncio.Queue(maxsize=self.settings.collector_item_queue_size)
             candidate_pool: list[Listing] = []
-            ranking_mode = False
             seen_item_ids: set[str] = set()
             consumer_error: list[Exception] = []
             queue_low_water = asyncio.Event()
             queue_low_water.set()
+            candidate_condition = asyncio.Condition()
+            assessment_finished = False
 
             async def rank_and_send(ranked_candidates: list[Listing]) -> None:
                 if not ranked_candidates:
@@ -195,35 +196,55 @@ class TaskRunner:
                     candidate = await completed
                     if candidate is None:
                         continue
-                    candidate_pool.append(candidate)
-                    task.candidate_count += 1
-                    # 单商品通过 item_assessment 后立刻持久化，供运行中的记录轮询显示。
-                    session.commit()
+                    async with candidate_condition:
+                        candidate_pool.append(candidate)
+                        task.candidate_count += 1
+                        # 单商品通过 item_assessment 后立刻持久化，供运行中的记录轮询显示。
+                        session.commit()
+                        candidate_condition.notify_all()
                 session.commit()
 
-            async def rank_candidate_batch(*, final: bool = False, ranking_mode: bool = False) -> None:
-                """排序和初筛使用同一模型；候选池高水位时由排序模式独占模型。"""
-                if not candidate_pool:
-                    return
-                if not final and not ranking_mode:
-                    if not self.is_candidate_pool_low(len(candidate_pool), self.settings.candidate_pool_size):
-                        return
-                count = min(self.RANKING_BATCH_SIZE, len(candidate_pool))
-                ranked_candidates = random.sample(candidate_pool, count)
-                ranked_ids = {candidate.id for candidate in ranked_candidates}
-                candidate_pool[:] = [candidate for candidate in candidate_pool if candidate.id not in ranked_ids]
-                await rank_and_send(ranked_candidates)
+            async def rank_candidates() -> None:
+                """运行中只处理完整 20 条批次；收尾时再处理不足 20 条的剩余候选。"""
+                try:
+                    while True:
+                        async with candidate_condition:
+                            await candidate_condition.wait_for(
+                                lambda: ((len(candidate_pool) >= self.RANKING_BATCH_SIZE
+                                          and len(candidate_pool) > self.settings.candidate_pool_size
+                                          * self.COLLECTION_RESUME_THRESHOLD)
+                                         )
+                                or assessment_finished
+                                or bool(consumer_error),
+                            )
+                            if consumer_error:
+                                raise consumer_error[0]
+                            if not candidate_pool and assessment_finished:
+                                return
+                            count = (min(self.RANKING_BATCH_SIZE, len(candidate_pool))
+                                     if assessment_finished else self.RANKING_BATCH_SIZE)
+                            ranked_candidates = random.sample(candidate_pool, count)
+                            ranked_ids = {candidate.id for candidate in ranked_candidates}
+                            candidate_pool[:] = [candidate for candidate in candidate_pool
+                                                 if candidate.id not in ranked_ids]
+                            candidate_condition.notify_all()
+                        await rank_and_send(ranked_candidates)
+                except Exception as exc:
+                    consumer_error.append(exc)
+                    async with candidate_condition:
+                        candidate_condition.notify_all()
 
             async def consume_items() -> None:
-                nonlocal ranking_mode
                 while True:
-                    if self.should_start_ranking(len(candidate_pool), self.settings.candidate_pool_size):
-                        ranking_mode = True
-                    if ranking_mode:
-                        await rank_candidate_batch(ranking_mode=True)
-                        if self.is_candidate_pool_low(len(candidate_pool), self.settings.candidate_pool_size):
-                            ranking_mode = False
-                        continue
+                    # 高水位只运行排序；中水位初筛与排序 worker 可同时请求模型。
+                    async with candidate_condition:
+                        await candidate_condition.wait_for(
+                            lambda: not self.should_start_ranking(
+                                len(candidate_pool), self.settings.candidate_pool_size,
+                            ) or bool(consumer_error),
+                        )
+                        if consumer_error:
+                            raise consumer_error[0]
                     raw_item = await item_queue.get()
                     consumed_items = 1
                     stop_after_batch = False
@@ -278,6 +299,7 @@ class TaskRunner:
                             raise consumer_error[0]
 
             consumer = asyncio.create_task(consume_items())
+            ranking_worker = asyncio.create_task(rank_candidates())
             # 仅在登录态失效或平台明确拒绝当前会话时切换账号。
             # 页面结构变化、超时等普通错误不能进入冷却，否则会误伤可正常使用的账号。
             tried_account_ids: set[str] = set()
@@ -311,13 +333,15 @@ class TaskRunner:
                 break
             await item_queue.put(None)
             await consumer
+            assessment_finished = True
+            async with candidate_condition:
+                candidate_condition.notify_all()
+            await ranking_worker
             if consumer_error:
                 raise consumer_error[0]
             if not collected:
                 raise RuntimeError("没有可用的闲鱼登录状态；请完成登录，或等待受限账号冷却后再试。")
             self._raise_if_stopped(rule_id)
-            while candidate_pool:
-                await rank_candidate_batch(final=True)
             task.status, task.stage, task.finished_at = "success", "done", beijing_now()
             session.commit()
             return task.id
@@ -341,6 +365,13 @@ class TaskRunner:
                 consumer.cancel()
                 try:
                     await consumer
+                except asyncio.CancelledError:
+                    pass
+            ranking_worker = locals().get("ranking_worker")
+            if ranking_worker and not ranking_worker.done():
+                ranking_worker.cancel()
+                try:
+                    await ranking_worker
                 except asyncio.CancelledError:
                     pass
             session.close()
