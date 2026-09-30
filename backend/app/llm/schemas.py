@@ -1,5 +1,3 @@
-from typing import Literal
-
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -26,12 +24,6 @@ class UserRequirement(BaseModel):
     price_range: PriceRange = Field(default_factory=PriceRange)
     conditions: list[str] = Field(default_factory=list)
     original_input: OriginalInput
-
-
-class ProductConditions(BaseModel):
-    xianyu_item_id: str
-    conditions: list[str] = Field(default_factory=list)
-    extraction_status: Literal["complete", "partial", "failed"] = "complete"
 
 
 class ItemAssessment(BaseModel):

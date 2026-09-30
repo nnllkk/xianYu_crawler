@@ -8,7 +8,7 @@ from pydantic import BaseModel, ValidationError
 
 from ..config import Settings
 from .provider import LLMProvider
-from .schemas import ItemAssessment, PriceRange, ProductConditions, RankedItem, RankingResult, UserRequirement
+from .schemas import ItemAssessment, PriceRange, RankedItem, RankingResult, UserRequirement
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -28,20 +28,8 @@ USER_REQUIREMENT_SYSTEM_PROMPT = """你是闲鱼二手商品需求解析器。
 示例：product="MacBook M1 Pro"，extra_conditions="16寸 32G+512G，不要维修机"，budget="6000-8000" 时，conditions 至少包含"屏幕尺寸16寸"、"内存至少32GB"、"存储至少512GB"和“不接受维修机”，price_range 为 {"min":6000,"max":8000}。"""
 
 
-PRODUCT_CONDITIONS_SYSTEM_PROMPT = """你是闲鱼搜索列表商品信息提取器。
-任务：仅依据输入中的 title 和 card_text，为该商品提取所有可确认信息到 ProductConditions JSON；不输出解释、Markdown 或 Schema 以外字段。
-
-必须遵守：
-1. xianyu_item_id 必须原样复制输入，不能生成、修改或省略。
-2. conditions 每项是简短、独立的自然语言事实，例如"Apple品牌"、"MacBook Pro型号"、"M1 Pro芯片"、"屏幕尺寸16寸"、"内存32GB"、"存储512GB"、"银色"、"企业管理机"、"全原无修"。
-3. 提取标题和卡片原文中所有与型号、规格、颜色、尺寸、尺码、品牌、系列、成色、维修/拆修、功能状态、配件、地点、风险有关的明确事实，适用于电脑、玩偶、服装等任意品类。
-4. 不得根据常识补全未写出的规格；例如只写"M1"时不能输出"M1 Pro芯片"，只写"16+512"且上下文不支持时不能断定内存或存储单位。
-5. 否定或风险信息必须保留，例如"企业管理机"、"维修"、"屏幕有划痕"，不能因为它不利于推荐而删除。
-6. 信息充分时 extraction_status="complete"；原文存在但有关键歧义时为"partial"；没有可读信息时为"failed"。"""
-
-
 ITEM_ASSESSMENT_SYSTEM_PROMPT = """你是闲鱼二手商品关注资格判断器。
-任务：根据 user_conditions、单个商品的 conditions 及 title/card_text 证据，判断该商品是否值得进入后续候选池。只输出 ItemAssessment JSON，不输出解释、Markdown 或 Schema 以外字段。
+任务：根据 user_conditions、单个商品的 title/card_text 证据，直接判断该商品是否值得进入后续候选池。只输出 ItemAssessment JSON，不输出解释、Markdown 或 Schema 以外字段。
 
 必须遵守：
 1. xianyu_item_id 必须原样复制输入，不能生成、修改或省略。
@@ -52,7 +40,7 @@ ITEM_ASSESSMENT_SYSTEM_PROMPT = """你是闲鱼二手商品关注资格判断器
 
 
 RANKING_SYSTEM_PROMPT = """你是闲鱼二手商品候选排序器。
-任务：仅比较已通过关注资格判断的候选商品，根据 user_conditions、商品 conditions 及 title/card_text 证据输出 RankingResult JSON；不输出解释、Markdown 或 Schema 以外字段。
+任务：仅比较已通过关注资格判断的候选商品，根据 user_conditions、商品 title/card_text 证据输出 RankingResult JSON；不输出解释、Markdown 或 Schema 以外字段。
 
 必须遵守：
 1. 只能返回输入 candidates 中存在的 xianyu_item_id；每个 ID 至多出现一次。
@@ -87,20 +75,26 @@ class LLMService:
                 if exc.status_code not in (429, 500, 502, 503, 504):
                     break
                 if attempt < self.settings.llm_retry_count:
-                    time.sleep(2**attempt)
+                    self._wait_before_retry(attempt, schema.__name__)
             except (APIConnectionError, APITimeoutError, RateLimitError, ValidationError, ValueError) as exc:
                 last_error = exc
                 logger.warning("llm call failed", extra={"schema": schema.__name__, "attempt": attempt + 1,
                                                          "error_type": type(exc).__name__,
                                                          "duration_ms": round((time.monotonic() - started) * 1000)})
                 if attempt < self.settings.llm_retry_count:
-                    time.sleep(2**attempt)
+                    self._wait_before_retry(attempt, schema.__name__)
             except Exception as exc:
                 # 未知异常不重复调用，避免把编程错误伪装成瞬时故障。
                 last_error = exc
                 logger.exception("unexpected llm error", extra={"schema": schema.__name__, "attempt": attempt + 1})
                 break
         raise RuntimeError(f"LLM {schema.__name__} 调用失败：{last_error}") from last_error
+
+    def _wait_before_retry(self, attempt: int, schema_name: str) -> None:
+        """线性退避：第 1 次重试等待 5 秒，之后每次增加 5 秒。"""
+        delay = self.settings.llm_retry_delay_seconds * (attempt + 1)
+        logger.info("waiting before llm retry", extra={"schema": schema_name, "delay_seconds": delay})
+        time.sleep(delay)
 
     def parse_requirement(self, product: str, extra_conditions: str | None, budget: str | None) -> UserRequirement:
         payload = {"product": product, "extra_conditions": extra_conditions, "budget": budget}
@@ -127,15 +121,6 @@ class LLMService:
             raise ValueError("预算必须是 min-max、min- 或 -max 格式")
         return PriceRange(min=float(matched.group(1)) if matched.group(1) else None,
                           max=float(matched.group(2)) if matched.group(2) else None)
-
-    def parse_product(self, item: dict[str, object]) -> ProductConditions:
-        payload = {"xianyu_item_id": item["xianyu_item_id"], "title": item.get("title"),
-                   "card_text": (item.get("raw_data") or {}).get("card_text")}
-        return self._request(
-            ProductConditions,
-            PRODUCT_CONDITIONS_SYSTEM_PROMPT,
-            json.dumps(payload, ensure_ascii=False),
-        )
 
     def assess(self, requirement: UserRequirement, candidate: dict[str, object]) -> ItemAssessment:
         payload = {"user_conditions": requirement.conditions, "candidate": candidate}

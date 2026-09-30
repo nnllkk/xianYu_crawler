@@ -2,14 +2,11 @@ app:
   timezone: Asia/Shanghai
 llm:
   default_provider: ollama
-  retry_count: 2
+  retry_count: 3
+  retry_delay_seconds: 5
   timeout_seconds: 120
   tasks:
     user_requirement:
-      provider: ollama
-      model: gemma4:latest
-      context_length: 4096
-    product_parse:
       provider: ollama
       model: gemma4:latest
       context_length: 4096
@@ -36,12 +33,13 @@ scheduler:
 collector:
   # 闲鱼会拦截当前无头浏览器环境；默认使用可见浏览器进行已授权会话采集。
   headless: false
-  page_queue_size: 2 # 等待 LLM 分析时允许缓冲的已采集页面数。
+  # 原始商品队列。达到 80% 时暂停翻页，降到 20% 后恢复。
+  item_queue_size: 60
   page_delay_min_seconds: 5
   page_delay_max_seconds: 15
 analysis:
-  # 通过首次判断的商品累计到该容量后进行排序；首次判断并发受下项限制。
-  candidate_pool_size: 20 # 初始次判断商品池容量
+  # 候选队列容量。达到 70% 暂停初筛并排序，降到 20% 后恢复初筛。
+  candidate_pool_size: 100
   initial_assessment_concurrency: 2 # 初始次判断并发数
 xianyu:
   state_dir: data/xianyu_states

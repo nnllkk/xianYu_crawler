@@ -1,7 +1,7 @@
 import httpx
 
 from ..config import Settings
-from .schemas import ItemAssessment, ProductConditions, RankingResult, UserRequirement
+from .schemas import ItemAssessment, RankingResult, UserRequirement
 from .provider import LLMProvider
 
 
@@ -14,7 +14,6 @@ class OllamaProvider(LLMProvider):
         self.timeout = settings.llm_timeout_seconds
         self.context_lengths = {
             "UserRequirement": settings.llm_user_requirement_context_length,
-            "ProductConditions": settings.llm_product_parse_context_length,
             "ItemAssessment": settings.llm_item_assessment_context_length,
             "RankingResult": settings.llm_candidate_ranking_context_length,
         }
@@ -22,7 +21,6 @@ class OllamaProvider(LLMProvider):
     def complete_json(self, *, system: str, user: str, schema_name: str) -> str:
         schemas = {
             "UserRequirement": UserRequirement,
-            "ProductConditions": ProductConditions,
             "ItemAssessment": ItemAssessment,
             "RankingResult": RankingResult,
         }

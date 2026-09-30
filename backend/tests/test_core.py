@@ -60,17 +60,15 @@ def test_collector_uses_headed_browser_by_default(monkeypatch) -> None:
 
 def test_pipeline_limits_are_configurable() -> None:
     settings = Settings(
-        collector_page_queue_size=3,
-        candidate_pool_size=12,
+        collector_item_queue_size=60,
+        candidate_pool_size=100,
         initial_assessment_concurrency=4,
-        llm_product_parse_context_length=2048,
         llm_item_assessment_context_length=3072,
         llm_candidate_ranking_context_length=8192,
     )
-    assert settings.collector_page_queue_size == 3
-    assert settings.candidate_pool_size == 12
+    assert settings.collector_item_queue_size == 60
+    assert settings.candidate_pool_size == 100
     assert settings.initial_assessment_concurrency == 4
-    assert settings.llm_product_parse_context_length == 2048
     assert settings.llm_item_assessment_context_length == 3072
     assert settings.llm_candidate_ranking_context_length == 8192
 
@@ -80,6 +78,17 @@ def test_assessment_parallelism_only_starts_above_queue_high_water_mark() -> Non
     assert TaskRunner.assessment_batch_size(2, 2, 2) == 2
     assert TaskRunner.assessment_batch_size(3, 4, 2) == 1
     assert TaskRunner.assessment_batch_size(4, 4, 2) == 2
+
+
+def test_collection_and_ranking_water_marks_are_hysteretic() -> None:
+    assert TaskRunner.should_pause_collection(48, 60)
+    assert not TaskRunner.should_pause_collection(47, 60)
+    assert TaskRunner.is_collection_queue_low(12, 60)
+    assert not TaskRunner.is_collection_queue_low(13, 60)
+    assert TaskRunner.should_start_ranking(70, 100)
+    assert not TaskRunner.should_start_ranking(69, 100)
+    assert TaskRunner.is_candidate_pool_low(20, 100)
+    assert not TaskRunner.is_candidate_pool_low(21, 100)
 
 
 def test_ollama_uses_context_length_for_each_task(monkeypatch) -> None:
@@ -101,13 +110,12 @@ def test_ollama_uses_context_length_for_each_task(monkeypatch) -> None:
     monkeypatch.setattr(ollama_module.httpx, "post", fake_post)
     provider = OllamaProvider(Settings(
         llm_user_requirement_context_length=1024,
-        llm_product_parse_context_length=2048,
         llm_item_assessment_context_length=3072,
         llm_candidate_ranking_context_length=4096,
     ))
-    for schema_name in ("UserRequirement", "ProductConditions", "ItemAssessment", "RankingResult"):
+    for schema_name in ("UserRequirement", "ItemAssessment", "RankingResult"):
         provider.complete_json(system="test", user="{}", schema_name=schema_name)
-    assert requested_contexts == [1024, 2048, 3072, 4096]
+    assert requested_contexts == [1024, 3072, 4096]
 
 
 def test_collector_prefers_chrome_channel() -> None:
@@ -166,11 +174,33 @@ def test_mock_llm_contracts() -> None:
     service = LLMService(ProviderFactory.create(settings, "mock"), settings)
     requirement = service.parse_requirement("MacBook M1 Pro", "16寸+32G", "6000-8000")
     assert requirement.search_query == "MacBook M1 Pro"
-    product = service.parse_product({"xianyu_item_id": "1", "title": "MacBook", "raw_data": {"card_text": "16寸"}})
-    assessment = service.assess(requirement, {"xianyu_item_id": "1", "price": 6000, "conditions": product.conditions})
+    assessment = service.assess(requirement, {"xianyu_item_id": "1", "title": "MacBook", "price": 6000,
+                                              "raw_data": {"card_text": "16寸"}})
     assert assessment.worthwhile
-    result = service.rank(requirement, [{"xianyu_item_id": "1", "price": 6000, "conditions": product.conditions}])
+    result = service.rank(requirement, [{"xianyu_item_id": "1", "title": "MacBook", "price": 6000,
+                                         "raw_data": {"card_text": "16寸"}}])
     assert result.items[0].xianyu_item_id == "1"
+
+
+def test_llm_retries_with_linear_backoff(monkeypatch) -> None:
+    attempts = []
+    delays = []
+
+    class RetryingProvider:
+        def complete_json(self, **kwargs):
+            attempts.append(kwargs["schema_name"])
+            if len(attempts) <= 3:
+                raise TimeoutError("模型暂时无响应")
+            return '{"keyword":"MacBook","search_query":"MacBook","price_range":{"min":null,"max":null},"conditions":[],"original_input":{"product":"MacBook"}}'
+
+    monkeypatch.setattr("app.llm.service.time.sleep", delays.append)
+    settings = Settings(llm_retry_count=3, llm_retry_delay_seconds=5)
+    service = LLMService(RetryingProvider(), settings)
+    result = service.parse_requirement("MacBook", None, None)
+
+    assert result.keyword == "MacBook"
+    assert attempts == ["UserRequirement"] * 4
+    assert delays == [5, 10, 15]
 
 
 def test_requirement_budget_is_deterministic_when_model_omits_it() -> None:
@@ -434,14 +464,14 @@ def test_offline_task_pipeline(monkeypatch, tmp_path: Path) -> None:
     assert sent and "item-1" in sent[0][2]
 
 
-def test_task_ranks_full_pool_before_collection_finishes(monkeypatch, tmp_path: Path) -> None:
+def test_task_drains_remaining_candidates_in_final_ranking(monkeypatch, tmp_path: Path) -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
     monkeypatch.setattr(task_runner_module, "SessionLocal", session_factory)
     settings = Settings(
         llm_provider="mock", llm_retry_count=0, smtp_host="smtp.test", smtp_from="from@test",
-        candidate_pool_size=2, initial_assessment_concurrency=2,
+        candidate_pool_size=20, initial_assessment_concurrency=2,
     )
     service = LLMService(ProviderFactory.create(settings, "mock"), settings)
     with Session(engine) as session:
@@ -467,7 +497,7 @@ def test_task_ranks_full_pool_before_collection_finishes(monkeypatch, tmp_path: 
         return []
 
     runner = TaskRunner(settings, service)
-    assert settings.candidate_pool_size == 2
+    assert settings.candidate_pool_size == 20
     assert settings.initial_assessment_concurrency == 2
     runner.collector = SimpleNamespace(search_pages=collect_pages)
     runner.mailer = SimpleNamespace(send=lambda *_args: None)
@@ -485,7 +515,8 @@ def test_task_ranks_full_pool_before_collection_finishes(monkeypatch, tmp_path: 
         assert task.scraped_count == 3
         assert task.candidate_count == 3
         assert task.sent_count == 3
-    assert ranked_batches == [["item-1", "item-2"], ["item-3"]]
+    assert len(ranked_batches) == 1
+    assert set(ranked_batches[0]) == {"item-1", "item-2", "item-3"}
 
 
 def test_stop_marks_task_stopped(monkeypatch, tmp_path: Path) -> None:

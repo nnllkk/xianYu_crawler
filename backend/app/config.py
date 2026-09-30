@@ -26,9 +26,9 @@ class Settings(BaseSettings):
     ollama_model: str = "gemma4:latest"
     llm_model: str = "gemma4:latest"
     llm_timeout_seconds: int = 60
-    llm_retry_count: int = 2
+    llm_retry_count: int = Field(default=3, ge=0)
+    llm_retry_delay_seconds: int = Field(default=5, ge=0)
     llm_user_requirement_context_length: int = Field(default=4096, ge=1)
-    llm_product_parse_context_length: int = Field(default=4096, ge=1)
     llm_item_assessment_context_length: int = Field(default=4096, ge=1)
     llm_candidate_ranking_context_length: int = Field(default=16384, ge=1)
     scheduler_interval_minutes: int = 1
@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     page_delay_min_seconds: int = 5
     page_delay_max_seconds: int = 15
     collector_headless: bool = False
-    collector_page_queue_size: int = Field(default=2, ge=1)
-    candidate_pool_size: int = Field(default=20, ge=1)
+    collector_item_queue_size: int = Field(default=60, ge=1)
+    candidate_pool_size: int = Field(default=100, ge=20)
     initial_assessment_concurrency: int = Field(default=2, ge=1)
     max_task_retries: int = 3
     xianyu_state_dir: str = str(ROOT_DIR / "data" / "xianyu_states")
@@ -69,13 +69,12 @@ def get_settings() -> Settings:
             "llm_provider": llm.get("default_provider", settings.llm_provider),
             "llm_model": tasks.get("user_requirement", {}).get("model", settings.llm_model),
             "llm_retry_count": llm.get("retry_count", settings.llm_retry_count),
+            "llm_retry_delay_seconds": llm.get("retry_delay_seconds", settings.llm_retry_delay_seconds),
             "llm_timeout_seconds": llm.get("timeout_seconds", settings.llm_timeout_seconds),
             "ollama_base_url": values.get("ollama", {}).get("base_url", settings.ollama_base_url),
             "ollama_model": values.get("ollama", {}).get("model", settings.ollama_model),
             "llm_user_requirement_context_length": tasks.get(
                 "user_requirement", {}).get("context_length", settings.llm_user_requirement_context_length),
-            "llm_product_parse_context_length": tasks.get(
-                "product_parse", {}).get("context_length", settings.llm_product_parse_context_length),
             "llm_item_assessment_context_length": tasks.get(
                 "item_assessment", {}).get("context_length", settings.llm_item_assessment_context_length),
             "llm_candidate_ranking_context_length": tasks.get(
@@ -86,7 +85,7 @@ def get_settings() -> Settings:
             "page_delay_min_seconds": values.get("collector", {}).get("page_delay_min_seconds", settings.page_delay_min_seconds),
             "page_delay_max_seconds": values.get("collector", {}).get("page_delay_max_seconds", settings.page_delay_max_seconds),
             "collector_headless": values.get("collector", {}).get("headless", settings.collector_headless),
-            "collector_page_queue_size": values.get("collector", {}).get("page_queue_size", settings.collector_page_queue_size),
+            "collector_item_queue_size": values.get("collector", {}).get("item_queue_size", settings.collector_item_queue_size),
             "candidate_pool_size": values.get("analysis", {}).get("candidate_pool_size", settings.candidate_pool_size),
             "initial_assessment_concurrency": values.get(
                 "analysis", {}).get("initial_assessment_concurrency", settings.initial_assessment_concurrency),

@@ -21,10 +21,6 @@ class MockProvider(LLMProvider):
                 "conditions": conditions,
                 "original_input": payload,
             }, ensure_ascii=False)
-        if schema_name == "ProductConditions":
-            text = f"{payload.get('title') or ''} {payload.get('card_text') or ''}".strip()
-            return json.dumps({"xianyu_item_id": payload["xianyu_item_id"], "conditions": [text],
-                               "extraction_status": "complete"}, ensure_ascii=False)
         if schema_name == "ItemAssessment":
             candidate = payload["candidate"]
             return json.dumps({"xianyu_item_id": candidate["xianyu_item_id"], "worthwhile": True,
