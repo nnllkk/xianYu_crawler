@@ -3,6 +3,7 @@ import logging
 import time
 from typing import TypeVar
 
+import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 from pydantic import BaseModel, ValidationError
 
@@ -76,7 +77,8 @@ class LLMService:
                     break
                 if attempt < self.settings.llm_retry_count:
                     self._wait_before_retry(attempt, schema.__name__)
-            except (APIConnectionError, APITimeoutError, RateLimitError, ValidationError, ValueError) as exc:
+            except (APIConnectionError, APITimeoutError, RateLimitError, httpx.TimeoutException,
+                    httpx.NetworkError, ValidationError, ValueError) as exc:
                 last_error = exc
                 logger.warning("llm call failed", extra={"schema": schema.__name__, "attempt": attempt + 1,
                                                          "error_type": type(exc).__name__,

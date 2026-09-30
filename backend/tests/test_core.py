@@ -1,6 +1,7 @@
 import sys
 import asyncio
 import json
+import httpx
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -190,7 +191,7 @@ def test_llm_retries_with_linear_backoff(monkeypatch) -> None:
         def complete_json(self, **kwargs):
             attempts.append(kwargs["schema_name"])
             if len(attempts) <= 3:
-                raise TimeoutError("模型暂时无响应")
+                raise httpx.ReadTimeout("模型暂时无响应")
             return '{"keyword":"MacBook","search_query":"MacBook","price_range":{"min":null,"max":null},"conditions":[],"original_input":{"product":"MacBook"}}'
 
     monkeypatch.setattr("app.llm.service.time.sleep", delays.append)

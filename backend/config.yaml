@@ -4,7 +4,7 @@ llm:
   default_provider: ollama
   retry_count: 3
   retry_delay_seconds: 5
-  timeout_seconds: 120
+  timeout_seconds: 300
   tasks:
     user_requirement:
       provider: ollama
