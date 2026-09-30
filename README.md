@@ -23,7 +23,7 @@
 需要已安装并运行：MySQL、Ollama、Python 3.11+、Node.js 与 npm。
 
 1. 在 MySQL 中创建数据库 `xianyu_filter`。
-2. 基于 `.env.example` 创建本地 `.env`，填写 MySQL 和 SMTP 配置。
+2. 基于 `.env.example` 创建本地 `.env`，填写数据库连接和完整 SMTP 配置；使用 SiliconFlow 时再填写 API Key。
 3. 安装后端与前端依赖，并安装 Playwright 浏览器：
 
 ```bash
@@ -88,6 +88,23 @@ SILICONFLOW_API_KEY=your-api-key
 ```
 
 `retry_count` 是首次请求之外的重试次数，默认 `3`；`retry_delay_seconds` 默认 `5`，请求失败后的等待依次为 `5`、`10`、`15` 秒。修改 `backend/config.yaml` 后需要重启后端服务。
+
+## 私密配置
+
+`.env` 保存不应提交到仓库的凭证、数据库连接和本机路径：
+
+```dotenv
+DATABASE_URL=mysql+pymysql://user:password@127.0.0.1:3306/xianyu_filter
+SMTP_HOST=smtp.example.com
+SMTP_PORT=465
+SMTP_USERNAME=your-smtp-username
+SMTP_PASSWORD=your-smtp-password
+SMTP_FROM=sender@example.com
+SILICONFLOW_API_KEY=your-api-key
+# PLAYWRIGHT_EXECUTABLE_PATH=/path/to/chrome
+```
+
+模型、Provider 地址、调度和队列参数写在 `backend/config.yaml`。SMTP 不从该文件读取。
 
 ## 启动
 
