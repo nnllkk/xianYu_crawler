@@ -8,7 +8,7 @@ from pydantic import BaseModel, ValidationError
 
 from ..config import Settings
 from .provider import LLMProvider
-from .schemas import PriceRange, ProductConditions, RankedItem, RankingResult, UserRequirement
+from .schemas import ItemAssessment, PriceRange, ProductConditions, RankedItem, RankingResult, UserRequirement
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -40,15 +40,26 @@ PRODUCT_CONDITIONS_SYSTEM_PROMPT = """你是闲鱼搜索列表商品信息提取
 6. 信息充分时 extraction_status="complete"；原文存在但有关键歧义时为"partial"；没有可读信息时为"failed"。"""
 
 
-RANKING_SYSTEM_PROMPT = """你是闲鱼二手商品候选比较器。
-任务：根据 user_conditions、商品 conditions 及 title/card_text 证据，为候选商品输出 RankingResult JSON；不输出解释、Markdown 或 Schema 以外字段。
+ITEM_ASSESSMENT_SYSTEM_PROMPT = """你是闲鱼二手商品关注资格判断器。
+任务：根据 user_conditions、单个商品的 conditions 及 title/card_text 证据，判断该商品是否值得进入后续候选池。只输出 ItemAssessment JSON，不输出解释、Markdown 或 Schema 以外字段。
+
+必须遵守：
+1. xianyu_item_id 必须原样复制输入，不能生成、修改或省略。
+2. 逐项比对用户条件。出现明确规格冲突、用户明确排除的情况或高风险时 worthwhile=false；将证据写入 risks。
+3. 信息不足但没有明确冲突时 worthwhile=true 且 uncertain=true，使其进入候选池等待与其他商品比较；不得因缺少未提供的信息直接排除。
+4. 价格已由后端完成预算筛选，不能因为价格决定 worthwhile。
+5. reason 只用一句中文说明判断依据；risks 仅列输入中存在的风险、缺失信息或需买家确认点，不得编造事实。"""
+
+
+RANKING_SYSTEM_PROMPT = """你是闲鱼二手商品候选排序器。
+任务：仅比较已通过关注资格判断的候选商品，根据 user_conditions、商品 conditions 及 title/card_text 证据输出 RankingResult JSON；不输出解释、Markdown 或 Schema 以外字段。
 
 必须遵守：
 1. 只能返回输入 candidates 中存在的 xianyu_item_id；每个 ID 至多出现一次。
-2. 先比较用户条件与商品条件，再用 title 和 card_text 复核可能遗漏或矛盾的信息。价格已由后端完成预算筛选，不要自行排除预算内商品。
-3. 推荐并不要求完全确定匹配：信息不足但没有明确冲突时 recommended=true 且 uncertain=true；有明确冲突或高风险时可 recommended=false，并在 risks 说明。
-4. reason 用一句中文说明最重要的匹配或排序依据；risks 列出明确风险、缺失信息或需买家确认的点。不得编造未提供的事实。
-5. score 为 0 到 100；rank 从 1 开始且不可重复，分数和排序应综合匹配程度、风险及价格，不因卖家所在地单独决定。
+2. 按匹配程度、明确风险、信息完整度和价格综合排序；价格已由后端完成预算筛选，但可在同等匹配时作为排序因素。不得因卖家所在地单独决定。
+3. recommended=true 表示应通知用户。对于信息不足但无明确冲突的商品，允许推荐，但必须 uncertain=true 并在 risks 标出需确认内容。
+4. reason 用一句中文说明最重要的排序或推荐依据；risks 列出明确风险、缺失信息或需买家确认的点。不得编造未提供的事实。
+5. score 为 0 到 100；rank 从 1 开始且不可重复。
 6. 最多返回 5 个 recommended=true 的商品；不推荐商品可不返回。"""
 
 
@@ -125,6 +136,13 @@ class LLMService:
             PRODUCT_CONDITIONS_SYSTEM_PROMPT,
             json.dumps(payload, ensure_ascii=False),
         )
+
+    def assess(self, requirement: UserRequirement, candidate: dict[str, object]) -> ItemAssessment:
+        payload = {"user_conditions": requirement.conditions, "candidate": candidate}
+        result = self._request(ItemAssessment, ITEM_ASSESSMENT_SYSTEM_PROMPT, json.dumps(payload, ensure_ascii=False))
+        if result.xianyu_item_id != str(candidate["xianyu_item_id"]):
+            raise RuntimeError("LLM ItemAssessment 返回了不属于当前商品的 ID")
+        return result
 
     def rank(self, requirement: UserRequirement, candidates: list[dict[str, object]]) -> RankingResult:
         payload = {"user_conditions": requirement.conditions, "candidates": candidates}

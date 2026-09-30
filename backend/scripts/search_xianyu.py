@@ -13,6 +13,7 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -313,7 +314,8 @@ async def _run_query(query: str, headless: bool, max_pages: int,
                      executable_path: str | None = None,
                      delay_min_seconds: int = 5,
                      delay_max_seconds: int = 15,
-                     storage_state_path: str | None = None) -> list[Listing]:
+                     storage_state_path: str | None = None,
+                     on_page: Callable[[list[Listing]], Awaitable[None]] | None = None) -> list[Listing]:
     """搜索一次，并在同一结果集内按页采集，直到末页或达到页数上限。"""
     if not query:
         return []
@@ -331,7 +333,10 @@ async def _run_query(query: str, headless: bool, max_pages: int,
         try:
             await search(page, query)
             for page_number in range(max_pages):
-                for item in await collect_listings(page, query):
+                page_items = await collect_listings(page, query)
+                if on_page:
+                    await on_page(page_items)
+                for item in page_items:
                     if item.xianyu_item_id:
                         merged.setdefault(item.xianyu_item_id, item)
                 if page_number == max_pages - 1:
@@ -361,7 +366,8 @@ async def run_query(query: str, headless: bool, max_pages: int,
                     executable_path: str | None = None,
                     delay_min_seconds: int = 5,
                     delay_max_seconds: int = 15,
-                    storage_state_path: str | None = None) -> list[Listing]:
+                    storage_state_path: str | None = None,
+                    on_page: Callable[[list[Listing]], Awaitable[None]] | None = None) -> list[Listing]:
     """以三类业务异常向上层暴露采集结果，避免普通故障误触发账号冷却。"""
     try:
         return await _run_query(
@@ -372,6 +378,7 @@ async def run_query(query: str, headless: bool, max_pages: int,
             delay_min_seconds,
             delay_max_seconds,
             storage_state_path,
+            on_page,
         )
     except (LoginRequiredError, AccessLimitedError, CollectionError):
         raise

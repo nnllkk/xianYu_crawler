@@ -34,6 +34,16 @@ class ProductConditions(BaseModel):
     extraction_status: Literal["complete", "partial", "failed"] = "complete"
 
 
+class ItemAssessment(BaseModel):
+    """单商品是否进入后续排序候选池的判断结果。"""
+
+    xianyu_item_id: str
+    worthwhile: bool
+    reason: str
+    risks: list[str] = Field(default_factory=list)
+    uncertain: bool = False
+
+
 class RankedItem(BaseModel):
     xianyu_item_id: str
     recommended: bool = True

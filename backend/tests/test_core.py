@@ -1,6 +1,7 @@
 import sys
 import asyncio
 import json
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from app.llm.schemas import UserRequirement  # noqa: E402
+from app.llm.schemas import ItemAssessment, UserRequirement  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.llm.factory import ProviderFactory  # noqa: E402
 from app.llm.service import LLMService  # noqa: E402
@@ -106,6 +107,8 @@ def test_mock_llm_contracts() -> None:
     requirement = service.parse_requirement("MacBook M1 Pro", "16寸+32G", "6000-8000")
     assert requirement.search_query == "MacBook M1 Pro"
     product = service.parse_product({"xianyu_item_id": "1", "title": "MacBook", "raw_data": {"card_text": "16寸"}})
+    assessment = service.assess(requirement, {"xianyu_item_id": "1", "price": 6000, "conditions": product.conditions})
+    assert assessment.worthwhile
     result = service.rank(requirement, [{"xianyu_item_id": "1", "price": 6000, "conditions": product.conditions}])
     assert result.items[0].xianyu_item_id == "1"
 
@@ -368,6 +371,80 @@ def test_offline_task_pipeline(monkeypatch, tmp_path: Path) -> None:
         assert state.email == "to@test"
     assert received_queries == ["MacBook"]
     assert sent and "item-1" in sent[0][2]
+
+
+def test_task_ranks_full_pool_before_collection_finishes(monkeypatch, tmp_path: Path) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(task_runner_module, "SessionLocal", session_factory)
+    settings = Settings(llm_provider="mock", llm_retry_count=0, smtp_host="smtp.test", smtp_from="from@test")
+    service = LLMService(ProviderFactory.create(settings, "mock"), settings)
+    with Session(engine) as session:
+        rule = WatchRule(product="MacBook", budget="1-10")
+        rule.recipients = [RuleRecipient(email="to@test")]
+        session.add(rule)
+        _add_active_account(session, tmp_path / "test-account.json")
+        session.commit()
+        rule_id = rule.id
+
+    def raw_item(item_id: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            xianyu_item_id=item_id, title=f"MacBook {item_id}", price=5.0,
+            url=f"https://example.test/{item_id}", image_url=None, seller_location="广东",
+            raw_data={"card_text": item_id}, matched_search_queries=["MacBook"],
+            collected_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    async def collect_pages(_query, _state_path, on_page):
+        await on_page([raw_item("item-1"), raw_item("item-2")])
+        await on_page([raw_item("item-3")])
+        return []
+
+    runner = TaskRunner(settings, service)
+    assert runner.CANDIDATE_POOL_SIZE == 20
+    assert runner.INITIAL_ASSESSMENT_CONCURRENCY == 2
+    runner.CANDIDATE_POOL_SIZE = 2
+    runner.collector = SimpleNamespace(search_pages=collect_pages)
+    runner.mailer = SimpleNamespace(send=lambda *_args: None)
+    ranked_batches = []
+    original_rank = service.rank
+    assessment_barrier = threading.Barrier(2)
+    assessment_lock = threading.Lock()
+    active_assessments = 0
+    maximum_parallel_assessments = 0
+    assessment_calls = 0
+
+    def record_assessment(_requirement, candidate):
+        nonlocal active_assessments, maximum_parallel_assessments, assessment_calls
+        with assessment_lock:
+            assessment_calls += 1
+            active_assessments += 1
+            maximum_parallel_assessments = max(maximum_parallel_assessments, active_assessments)
+            current_call = assessment_calls
+        try:
+            if current_call <= 2:
+                assessment_barrier.wait(timeout=1)
+            return ItemAssessment(xianyu_item_id=candidate["xianyu_item_id"], worthwhile=True, reason="测试通过")
+        finally:
+            with assessment_lock:
+                active_assessments -= 1
+
+    def record_rank(requirement, candidates):
+        ranked_batches.append([candidate["xianyu_item_id"] for candidate in candidates])
+        return original_rank(requirement, candidates)
+
+    monkeypatch.setattr(service, "rank", record_rank)
+    monkeypatch.setattr(service, "assess", record_assessment)
+    task_id = asyncio.run(runner.run(rule_id))
+
+    with Session(engine) as session:
+        task = session.get(TaskRun, task_id)
+        assert task.scraped_count == 3
+        assert task.candidate_count == 3
+        assert task.sent_count == 3
+    assert ranked_batches == [["item-1", "item-2"], ["item-3"]]
+    assert maximum_parallel_assessments == 2
 
 
 def test_stop_marks_task_stopped(monkeypatch, tmp_path: Path) -> None:

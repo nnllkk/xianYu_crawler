@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 
 from ..config import Settings
 
@@ -19,3 +20,10 @@ class CollectorService:
         return await run_query(query, self.settings.collector_headless, 20, self.settings.playwright_executable_path,
                                self.settings.page_delay_min_seconds,
                                self.settings.page_delay_max_seconds, storage_state_path)
+
+    async def search_pages(self, query: str, storage_state_path: str,
+                           on_page: Callable[[list[RawListing]], Awaitable[None]]) -> list[RawListing]:
+        """每页采集完成即交给调用方，避免等待全部页面后才开始分析。"""
+        return await run_query(query, self.settings.collector_headless, 20, self.settings.playwright_executable_path,
+                               self.settings.page_delay_min_seconds,
+                               self.settings.page_delay_max_seconds, storage_state_path, on_page)
