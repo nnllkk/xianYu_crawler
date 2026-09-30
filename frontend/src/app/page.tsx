@@ -28,6 +28,7 @@ type Rule = {
   extra_conditions: string | null;
   budget: string | null;
   interval_minutes: number;
+  max_pages: number;
   is_enabled: boolean;
   next_run_at: string | null;
   emails: string[];
@@ -68,6 +69,7 @@ type Draft = {
   budget: string;
   emails: string;
   interval_minutes: number;
+  max_pages: number;
   enabled: boolean;
 };
 const empty: Draft = {
@@ -76,6 +78,7 @@ const empty: Draft = {
   budget: "",
   emails: "",
   interval_minutes: 15,
+  max_pages: 20,
   enabled: true,
 };
 const stages: Record<string, string> = {
@@ -83,6 +86,7 @@ const stages: Record<string, string> = {
   parsing: "解析商品",
   scraping: "检索商品",
   filtering: "规则筛选",
+  analyzing: "资格判断",
   ranking: "比较候选",
   sending: "发送邮件",
   done: "已完成",
@@ -195,13 +199,16 @@ export default function Home() {
     if (picked && taskPage > 1) void loadDetails(picked, taskPage);
   }, [picked, taskPage, loadDetails]);
   useEffect(() => {
+    const hasRunningTask = tasks.some(
+      (task) => task.status === "pending" || task.status === "running",
+    );
     const id = setInterval(() => {
       void load();
       void loadAccounts();
       if (picked) void loadDetails(picked, taskPage);
-    }, 10000);
+    }, hasRunningTask ? 2000 : 10000);
     return () => clearInterval(id);
-  }, [load, loadAccounts, loadDetails, picked, taskPage]);
+  }, [load, loadAccounts, loadDetails, picked, taskPage, tasks]);
   const change = (key: keyof Draft, value: string | number | boolean) =>
     setDraft((v) => ({ ...v, [key]: value }));
   async function save(e: FormEvent) {
@@ -219,6 +226,7 @@ export default function Home() {
         budget: draft.budget || null,
         emails,
         interval_minutes: Number(draft.interval_minutes),
+        max_pages: Number(draft.max_pages),
         enabled: draft.enabled,
       };
       const rule = await call<Rule>(
@@ -343,6 +351,7 @@ export default function Home() {
       budget: r.budget ?? "",
       emails: r.emails.join("，"),
       interval_minutes: r.interval_minutes,
+      max_pages: r.max_pages,
       enabled: r.is_enabled,
     });
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -585,6 +594,17 @@ export default function Home() {
                     ))}
                   </select>
                 </label>
+                <label>
+                  采集页数
+                  <select
+                    value={draft.max_pages}
+                    onChange={(e) => change("max_pages", Number(e.target.value))}
+                  >
+                    {Array.from({ length: 20 }, (_, index) => index + 1).map((x) => (
+                      <option key={x} value={x}>{x} 页</option>
+                    ))}
+                  </select>
+                </label>
                 <div className="form-end">
                   <label className="toggle">
                     <input
@@ -655,7 +675,7 @@ export default function Home() {
                     </div>
                     <div>
                       <strong>{r.emails.join("、")}</strong>
-                      <small>每 {r.interval_minutes} 分钟检查</small>
+                      <small>每 {r.interval_minutes} 分钟检查 · 采集 {r.max_pages} 页</small>
                     </div>
                     <div>
                       <strong>
@@ -716,7 +736,7 @@ export default function Home() {
                       <tr>
                         <th>开始时间</th>
                         <th>状态</th>
-                        <th>阶段</th>
+                        <th>进度</th>
                         <th>采集 / 候选 / 推送</th>
                         <th>原因</th>
                       </tr>
@@ -733,7 +753,11 @@ export default function Home() {
                                   ? "失败"
                                   : "执行中"}
                             </td>
-                            <td>{stages[t.stage] ?? t.stage}</td>
+                            <td>
+                              {t.status === "pending" || t.status === "running"
+                                ? "进行中"
+                                : stages[t.stage] ?? t.stage}
+                            </td>
                             <td>
                               {t.scraped_count} / {t.candidate_count} /{" "}
                               {t.sent_count}

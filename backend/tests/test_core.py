@@ -1,7 +1,6 @@
 import sys
 import asyncio
 import json
-import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,15 +10,17 @@ from sqlalchemy.orm import Session, sessionmaker
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from app.llm.schemas import ItemAssessment, UserRequirement  # noqa: E402
+from app.llm.schemas import UserRequirement  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.llm.factory import ProviderFactory  # noqa: E402
+from app.llm.ollama import OllamaProvider  # noqa: E402
 from app.llm.service import LLMService  # noqa: E402
 from app.database import Base  # noqa: E402
 from app.models import NotificationState, TaskRun, WatchRule, RuleRecipient, XianyuAccount, beijing_now  # noqa: E402
 from app.services.task_runner import TaskRunner, TaskStoppedError  # noqa: E402
 from app.services.xianyu_accounts import XianyuAccountService  # noqa: E402
 from app.api import sync_rule_recipients  # noqa: E402
+from app.schemas import RuleCreate  # noqa: E402
 import app.services.task_runner as task_runner_module  # noqa: E402
 import app.services.collector as collector_module  # noqa: E402
 import search_xianyu as search_xianyu_module  # noqa: E402
@@ -38,6 +39,13 @@ def test_parse_budget_range() -> None:
     assert parse_budget("-8000") == (None, 8000)
 
 
+def test_rule_page_limit_defaults_to_twenty_and_accepts_user_choice() -> None:
+    default_rule = RuleCreate(product="MacBook", emails=["to@test.com"])
+    selected_rule = RuleCreate(product="MacBook", emails=["to@test.com"], max_pages=7)
+    assert default_rule.max_pages == 20
+    assert selected_rule.max_pages == 7
+
+
 def test_collector_uses_headed_browser_by_default(monkeypatch) -> None:
     observed = {}
 
@@ -46,21 +54,60 @@ def test_collector_uses_headed_browser_by_default(monkeypatch) -> None:
         return []
 
     monkeypatch.setattr(collector_module, "run_query", fake_run_query)
-    assert asyncio.run(CollectorService(Settings()).search("MacBook", "/tmp/state.json")) == []
-    assert observed == {"query": "MacBook", "headless": False, "max_pages": 20}
+    assert asyncio.run(CollectorService(Settings()).search("MacBook", "/tmp/state.json", 6)) == []
+    assert observed == {"query": "MacBook", "headless": False, "max_pages": 6}
 
 
 def test_pipeline_limits_are_configurable() -> None:
     settings = Settings(
-        collector_max_pages=7,
         collector_page_queue_size=3,
         candidate_pool_size=12,
         initial_assessment_concurrency=4,
+        llm_product_parse_context_length=2048,
+        llm_item_assessment_context_length=3072,
+        llm_candidate_ranking_context_length=8192,
     )
-    assert settings.collector_max_pages == 7
     assert settings.collector_page_queue_size == 3
     assert settings.candidate_pool_size == 12
     assert settings.initial_assessment_concurrency == 4
+    assert settings.llm_product_parse_context_length == 2048
+    assert settings.llm_item_assessment_context_length == 3072
+    assert settings.llm_candidate_ranking_context_length == 8192
+
+
+def test_assessment_parallelism_only_starts_above_queue_high_water_mark() -> None:
+    assert TaskRunner.assessment_batch_size(1, 2, 2) == 1
+    assert TaskRunner.assessment_batch_size(2, 2, 2) == 2
+    assert TaskRunner.assessment_batch_size(3, 4, 2) == 1
+    assert TaskRunner.assessment_batch_size(4, 4, 2) == 2
+
+
+def test_ollama_uses_context_length_for_each_task(monkeypatch) -> None:
+    requested_contexts = []
+
+    class Response:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"message": {"content": "{}"}}
+
+    def fake_post(_url, **kwargs):
+        requested_contexts.append(kwargs["json"]["options"]["num_ctx"])
+        return Response()
+
+    import app.llm.ollama as ollama_module
+
+    monkeypatch.setattr(ollama_module.httpx, "post", fake_post)
+    provider = OllamaProvider(Settings(
+        llm_user_requirement_context_length=1024,
+        llm_product_parse_context_length=2048,
+        llm_item_assessment_context_length=3072,
+        llm_candidate_ranking_context_length=4096,
+    ))
+    for schema_name in ("UserRequirement", "ProductConditions", "ItemAssessment", "RankingResult"):
+        provider.complete_json(system="test", user="{}", schema_name=schema_name)
+    assert requested_contexts == [1024, 2048, 3072, 4096]
 
 
 def test_collector_prefers_chrome_channel() -> None:
@@ -201,7 +248,7 @@ def _run_account_failure_case(monkeypatch, tmp_path: Path, error: Exception) -> 
 
     runner = TaskRunner(settings, service)
 
-    async def fail_search(_query, _state_path):
+    async def fail_search(_query, _state_path, _max_pages):
         raise error
 
     runner.collector = SimpleNamespace(search=fail_search)
@@ -362,8 +409,9 @@ def test_offline_task_pipeline(monkeypatch, tmp_path: Path) -> None:
     )
     received_queries = []
 
-    async def collect_one_query(query, _state_path):
+    async def collect_one_query(query, _state_path, max_pages):
         received_queries.append(query)
+        assert max_pages == 20
         return [SimpleNamespace(
             xianyu_item_id="item-1", title="MacBook 16寸 32G", price=5.0, url="https://example.test/item-1",
             image_url=None, seller_location="广东", raw_data={"card_text": "16寸 32G"},
@@ -397,7 +445,7 @@ def test_task_ranks_full_pool_before_collection_finishes(monkeypatch, tmp_path: 
     )
     service = LLMService(ProviderFactory.create(settings, "mock"), settings)
     with Session(engine) as session:
-        rule = WatchRule(product="MacBook", budget="1-10")
+        rule = WatchRule(product="MacBook", budget="1-10", max_pages=3)
         rule.recipients = [RuleRecipient(email="to@test")]
         session.add(rule)
         _add_active_account(session, tmp_path / "test-account.json")
@@ -412,7 +460,8 @@ def test_task_ranks_full_pool_before_collection_finishes(monkeypatch, tmp_path: 
             collected_at=datetime.now(timezone.utc).isoformat(),
         )
 
-    async def collect_pages(_query, _state_path, on_page):
+    async def collect_pages(_query, _state_path, on_page, max_pages):
+        assert max_pages == 3
         await on_page([raw_item("item-1"), raw_item("item-2")])
         await on_page([raw_item("item-3")])
         return []
@@ -424,33 +473,11 @@ def test_task_ranks_full_pool_before_collection_finishes(monkeypatch, tmp_path: 
     runner.mailer = SimpleNamespace(send=lambda *_args: None)
     ranked_batches = []
     original_rank = service.rank
-    assessment_barrier = threading.Barrier(2)
-    assessment_lock = threading.Lock()
-    active_assessments = 0
-    maximum_parallel_assessments = 0
-    assessment_calls = 0
-
-    def record_assessment(_requirement, candidate):
-        nonlocal active_assessments, maximum_parallel_assessments, assessment_calls
-        with assessment_lock:
-            assessment_calls += 1
-            active_assessments += 1
-            maximum_parallel_assessments = max(maximum_parallel_assessments, active_assessments)
-            current_call = assessment_calls
-        try:
-            if current_call <= 2:
-                assessment_barrier.wait(timeout=1)
-            return ItemAssessment(xianyu_item_id=candidate["xianyu_item_id"], worthwhile=True, reason="测试通过")
-        finally:
-            with assessment_lock:
-                active_assessments -= 1
-
     def record_rank(requirement, candidates):
         ranked_batches.append([candidate["xianyu_item_id"] for candidate in candidates])
         return original_rank(requirement, candidates)
 
     monkeypatch.setattr(service, "rank", record_rank)
-    monkeypatch.setattr(service, "assess", record_assessment)
     task_id = asyncio.run(runner.run(rule_id))
 
     with Session(engine) as session:
@@ -459,7 +486,6 @@ def test_task_ranks_full_pool_before_collection_finishes(monkeypatch, tmp_path: 
         assert task.candidate_count == 3
         assert task.sent_count == 3
     assert ranked_batches == [["item-1", "item-2"], ["item-3"]]
-    assert maximum_parallel_assessments == 2
 
 
 def test_stop_marks_task_stopped(monkeypatch, tmp_path: Path) -> None:
@@ -479,7 +505,7 @@ def test_stop_marks_task_stopped(monkeypatch, tmp_path: Path) -> None:
 
     runner = TaskRunner(settings, service)
 
-    async def stop_during_search(_query, _state_path):
+    async def stop_during_search(_query, _state_path, _max_pages):
         TaskRunner.request_stop(rule_id)
         return []
 

@@ -24,17 +24,19 @@ class Settings(BaseSettings):
     llm_provider: str = "ollama"
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "gemma4:latest"
-    ollama_context_length: int = 16384
     llm_model: str = "gemma4:latest"
     llm_timeout_seconds: int = 60
     llm_retry_count: int = 2
+    llm_user_requirement_context_length: int = Field(default=4096, ge=1)
+    llm_product_parse_context_length: int = Field(default=4096, ge=1)
+    llm_item_assessment_context_length: int = Field(default=4096, ge=1)
+    llm_candidate_ranking_context_length: int = Field(default=16384, ge=1)
     scheduler_interval_minutes: int = 1
     schedule_min_interval_minutes: int = 10
     schedule_max_interval_minutes: int = 30
     page_delay_min_seconds: int = 5
     page_delay_max_seconds: int = 15
     collector_headless: bool = False
-    collector_max_pages: int = Field(default=20, ge=1)
     collector_page_queue_size: int = Field(default=2, ge=1)
     candidate_pool_size: int = Field(default=20, ge=1)
     initial_assessment_concurrency: int = Field(default=2, ge=1)
@@ -53,29 +55,37 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
-    config_path = ROOT_DIR / "config.yaml"
+    # .env 和运行数据位于项目根目录；非敏感 YAML 配置位于 backend/config.yaml。
+    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
     if config_path.exists():
         # YAML 只覆盖非敏感配置；密钥始终由环境变量提供。
         values = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         llm = values.get("llm", {})
+        tasks = llm.get("tasks", {})
         providers = llm.get("providers", {})
         siliconflow = providers.get("siliconflow", {})
         settings = settings.model_copy(update={
             "siliconflow_base_url": siliconflow.get("base_url", settings.siliconflow_base_url),
             "llm_provider": llm.get("default_provider", settings.llm_provider),
-            "llm_model": llm.get("tasks", {}).get("llm1_user_parse", {}).get("model", settings.llm_model),
+            "llm_model": tasks.get("user_requirement", {}).get("model", settings.llm_model),
             "llm_retry_count": llm.get("retry_count", settings.llm_retry_count),
             "llm_timeout_seconds": llm.get("timeout_seconds", settings.llm_timeout_seconds),
             "ollama_base_url": values.get("ollama", {}).get("base_url", settings.ollama_base_url),
             "ollama_model": values.get("ollama", {}).get("model", settings.ollama_model),
-            "ollama_context_length": values.get("ollama", {}).get("context_length", settings.ollama_context_length),
+            "llm_user_requirement_context_length": tasks.get(
+                "user_requirement", {}).get("context_length", settings.llm_user_requirement_context_length),
+            "llm_product_parse_context_length": tasks.get(
+                "product_parse", {}).get("context_length", settings.llm_product_parse_context_length),
+            "llm_item_assessment_context_length": tasks.get(
+                "item_assessment", {}).get("context_length", settings.llm_item_assessment_context_length),
+            "llm_candidate_ranking_context_length": tasks.get(
+                "candidate_ranking", {}).get("context_length", settings.llm_candidate_ranking_context_length),
             "scheduler_interval_minutes": values.get("scheduler", {}).get("poll_interval_minutes", settings.scheduler_interval_minutes),
             "schedule_min_interval_minutes": values.get("scheduler", {}).get("min_interval_minutes", settings.schedule_min_interval_minutes),
             "schedule_max_interval_minutes": values.get("scheduler", {}).get("max_interval_minutes", settings.schedule_max_interval_minutes),
             "page_delay_min_seconds": values.get("collector", {}).get("page_delay_min_seconds", settings.page_delay_min_seconds),
             "page_delay_max_seconds": values.get("collector", {}).get("page_delay_max_seconds", settings.page_delay_max_seconds),
             "collector_headless": values.get("collector", {}).get("headless", settings.collector_headless),
-            "collector_max_pages": values.get("collector", {}).get("max_pages", settings.collector_max_pages),
             "collector_page_queue_size": values.get("collector", {}).get("page_queue_size", settings.collector_page_queue_size),
             "candidate_pool_size": values.get("analysis", {}).get("candidate_pool_size", settings.candidate_pool_size),
             "initial_assessment_concurrency": values.get(

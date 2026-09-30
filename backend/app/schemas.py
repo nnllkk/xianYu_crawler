@@ -9,6 +9,7 @@ class RuleCreate(BaseModel):
     budget: str | None = None
     emails: list[EmailStr] = Field(min_length=1)
     interval_minutes: int = Field(default=15, ge=10, le=30)
+    max_pages: int = Field(default=20, ge=1, le=20)
     enabled: bool = True
 
 
@@ -18,6 +19,7 @@ class RuleResponse(BaseModel):
     extra_conditions: str | None
     budget: str | None
     interval_minutes: int
+    max_pages: int
     is_enabled: bool
     next_run_at: datetime | None
     emails: list[str]

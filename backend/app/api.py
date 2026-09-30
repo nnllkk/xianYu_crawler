@@ -124,7 +124,7 @@ def serialize_rule(rule: WatchRule) -> RuleResponse:
     """将 ORM 规则统一转换为前端编辑和状态展示需要的字段。"""
     return RuleResponse(
         id=rule.id, product=rule.product, extra_conditions=rule.extra_conditions, budget=rule.budget,
-        interval_minutes=rule.interval_minutes,
+        interval_minutes=rule.interval_minutes, max_pages=rule.max_pages,
         is_enabled=rule.is_enabled, next_run_at=rule.next_run_at,
         emails=[item.email for item in rule.recipients], parsed_requirement=rule.parsed_requirement,
     )
@@ -149,6 +149,7 @@ def create_rule(payload: RuleCreate, session: Session = Depends(get_session)):
     requirement = parse_rule_requirement(payload)
     rule = WatchRule(product=payload.product, extra_conditions=payload.extra_conditions, budget=payload.budget,
                      parsed_requirement=requirement.model_dump(mode="json"), interval_minutes=payload.interval_minutes,
+                     max_pages=payload.max_pages,
                      is_enabled=payload.enabled)
     sync_rule_recipients(rule, [str(email) for email in payload.emails])
     session.add(rule)
@@ -169,7 +170,7 @@ def update_rule(rule_id: str, payload: RuleCreate, session: Session = Depends(ge
         raise HTTPException(404, "规则不存在")
     requirement = parse_rule_requirement(payload)
     rule.product, rule.extra_conditions, rule.budget = payload.product, payload.extra_conditions, payload.budget
-    rule.interval_minutes, rule.is_enabled = payload.interval_minutes, payload.enabled
+    rule.interval_minutes, rule.max_pages, rule.is_enabled = payload.interval_minutes, payload.max_pages, payload.enabled
     rule.parsed_requirement = requirement.model_dump(mode="json")
     sync_rule_recipients(rule, [str(email) for email in payload.emails])
     session.commit()

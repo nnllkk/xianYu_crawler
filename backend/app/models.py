@@ -36,6 +36,7 @@ class WatchRule(Base):
     budget: Mapped[str | None] = mapped_column(String(64))
     parsed_requirement: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     interval_minutes: Mapped[int] = mapped_column(default=15)
+    max_pages: Mapped[int] = mapped_column(default=20)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)

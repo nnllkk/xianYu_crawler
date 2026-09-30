@@ -1,6 +1,6 @@
 # LLM Prompt 规格
 
-默认模型为本地 Ollama `gemma4:latest`。三个阶段都要求 JSON Schema 输出，并且结果仍由 Pydantic 校验。
+默认模型为本地 Ollama `gemma4:latest`。所有阶段都要求 JSON Schema 输出，并且结果仍由 Pydantic 校验。上下文按 `config.yaml` 的 `llm.tasks` 配置：用户需求解析、商品信息提取和单商品资格判断使用 4096；候选排序使用 16384。
 
 ## LLM1：用户需求解析
 
@@ -36,4 +36,4 @@ Gemma 4 实测：能从 MacBook 卡片提取 M1、13 寸、16GB、256GB、银色
 
 规则：后端会丢弃任何不属于输入候选池的 ID。排序综合匹配程度、明确风险、信息完整度和价格；不能仅根据卖家所在地决定排序。信息不足但无明确冲突的商品可以推荐，但必须标记 `uncertain=true` 并在 `risks` 说明待确认项。
 
-采集与判断通过受限队列并行：浏览器仍使用同一会话顺序、低频翻页；每页采集结果立即进入确定性过滤。商品信息提取和 LLM2a 默认最多 2 路并发（`analysis.initial_assessment_concurrency` 可调整），采集页缓冲容量与最大翻页数分别由 `collector.page_queue_size`、`collector.max_pages` 控制，同时不对同一浏览器会话发起并行翻页。
+采集与判断通过受限队列并行：浏览器仍使用同一会话顺序、低频翻页；每页采集结果立即进入确定性过滤。采集页队列占用严格超过容量 75% 时，商品信息提取和 LLM2a 最多 2 路并发（`analysis.initial_assessment_concurrency` 可调整）；低于该阈值时只新启动单路。采集页缓冲容量由 `collector.page_queue_size` 控制；最大翻页数由用户在创建或编辑监控规则时选择，同时不对同一浏览器会话发起并行翻页。

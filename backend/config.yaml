@@ -3,17 +3,24 @@ app:
 llm:
   default_provider: ollama
   retry_count: 2
-  timeout_seconds: 60
+  timeout_seconds: 120
   tasks:
-    llm1_user_parse:
+    user_requirement:
       provider: ollama
       model: gemma4:latest
-    llm1_product_parse:
+      context_length: 4096
+    product_parse:
       provider: ollama
       model: gemma4:latest
-    llm2_rank:
+      context_length: 4096
+    item_assessment:
       provider: ollama
       model: gemma4:latest
+      context_length: 4096
+    candidate_ranking:
+      provider: ollama
+      model: gemma4:latest
+      context_length: 16384
   providers:
     siliconflow:
       base_url: https://api.siliconflow.cn/v1
@@ -21,7 +28,6 @@ llm:
 ollama:
   base_url: http://127.0.0.1:11434
   model: gemma4:latest
-  context_length: 16384
 scheduler:
   poll_interval_minutes: 1
   min_interval_minutes: 10
@@ -30,8 +36,6 @@ scheduler:
 collector:
   # 闲鱼会拦截当前无头浏览器环境；默认使用可见浏览器进行已授权会话采集。
   headless: false
-  # 单次规则最多翻页数，以及等待 LLM 分析时允许缓冲的已采集页面数。
-  max_pages: 20 # 闲鱼最多支持翻页 20 页
   page_queue_size: 2 # 等待 LLM 分析时允许缓冲的已采集页面数。
   page_delay_min_seconds: 5
   page_delay_max_seconds: 15

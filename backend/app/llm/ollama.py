@@ -1,7 +1,7 @@
 import httpx
 
 from ..config import Settings
-from .schemas import ProductConditions, RankingResult, UserRequirement
+from .schemas import ItemAssessment, ProductConditions, RankingResult, UserRequirement
 from .provider import LLMProvider
 
 
@@ -12,12 +12,18 @@ class OllamaProvider(LLMProvider):
         self.base_url = settings.ollama_base_url.rstrip("/")
         self.model = settings.ollama_model
         self.timeout = settings.llm_timeout_seconds
-        self.context_length = settings.ollama_context_length
+        self.context_lengths = {
+            "UserRequirement": settings.llm_user_requirement_context_length,
+            "ProductConditions": settings.llm_product_parse_context_length,
+            "ItemAssessment": settings.llm_item_assessment_context_length,
+            "RankingResult": settings.llm_candidate_ranking_context_length,
+        }
 
     def complete_json(self, *, system: str, user: str, schema_name: str) -> str:
         schemas = {
             "UserRequirement": UserRequirement,
             "ProductConditions": ProductConditions,
+            "ItemAssessment": ItemAssessment,
             "RankingResult": RankingResult,
         }
         response = httpx.post(
@@ -30,9 +36,8 @@ class OllamaProvider(LLMProvider):
                 ],
                 "stream": False,
                 "format": schemas[schema_name].model_json_schema() if schema_name in schemas else "json",
-                # LLM2 同时携带多个商品的标题和卡片证据，默认 4096 token
-                # 容易截断输入并造成空响应；长度由本地配置控制。
-                "options": {"temperature": 0, "num_ctx": self.context_length},
+                # 各任务按输入规模使用独立上下文，避免高频卡片解析占用排序所需的 16K 上下文。
+                "options": {"temperature": 0, "num_ctx": self.context_lengths[schema_name]},
             },
             timeout=self.timeout,
         )
