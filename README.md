@@ -39,6 +39,56 @@ python3 -m venv .venv
 ollama pull gemma4:latest
 ```
 
+## LLM 配置
+
+LLM 配置位于 `backend/config.yaml` 的 `llm` 节点。`default_provider` 和 `default_model` 是全部任务的默认值；任务没有指定 `provider` 或 `model` 时会继承它们。
+
+```yaml
+llm:
+  default_provider: ollama
+  default_model: gemma4:latest
+  tasks:
+    user_requirement:
+      context_length: 4096
+    item_assessment:
+      context_length: 4096
+    candidate_ranking:
+      context_length: 16384
+  providers:
+    ollama:
+      type: ollama
+      base_url: http://127.0.0.1:11434
+```
+
+支持将不同任务路由到不同 Provider。例如，把候选排序交给 SiliconFlow，而其他高频任务继续使用本地 Ollama：
+
+```yaml
+llm:
+  default_provider: ollama
+  default_model: gemma4:latest
+  tasks:
+    candidate_ranking:
+      provider: siliconflow
+      model: Qwen/Qwen3-32B
+      context_length: 16384
+  providers:
+    ollama:
+      type: ollama
+      base_url: http://127.0.0.1:11434
+    siliconflow:
+      type: siliconflow
+      base_url: https://api.siliconflow.cn/v1
+      api_key_env: SILICONFLOW_API_KEY
+```
+
+`providers` 中的名称由任务的 `provider` 字段引用，`type` 当前支持 `ollama`、`siliconflow` 和测试用的 `mock`。可为同一类型定义多个不同名称的实例，以连接不同地址。SiliconFlow 的密钥不写入 YAML，而是写入 `.env`：
+
+```dotenv
+SILICONFLOW_API_KEY=your-api-key
+```
+
+`retry_count` 是首次请求之外的重试次数，默认 `3`；`retry_delay_seconds` 默认 `5`，请求失败后的等待依次为 `5`、`10`、`15` 秒。修改 `backend/config.yaml` 后需要重启后端服务。
+
 ## 启动
 
 首次为脚本增加执行权限：
