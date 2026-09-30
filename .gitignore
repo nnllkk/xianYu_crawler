@@ -7,3 +7,4 @@ __pycache__/
 !.env.example
 .run/
 backend/data/xianyu_states/
+data/xianyu_states/*
