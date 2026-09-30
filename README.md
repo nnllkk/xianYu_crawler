@@ -22,9 +22,8 @@
 
 需要已安装并运行：MySQL、Ollama、Python 3.11+、Node.js 与 npm。
 
-1. 在 MySQL 中创建数据库 `xianyu_filter`。
-2. 基于 `.env.example` 创建本地 `.env`，填写数据库连接和完整 SMTP 配置；使用 SiliconFlow 时再填写 API Key。
-3. 安装后端与前端依赖，并安装 Playwright 浏览器：
+1. 基于 `.env.example` 创建本地 `.env`，填写数据库连接和完整 SMTP 配置；使用 SiliconFlow 时再填写 API Key。
+2. 安装后端与前端依赖，并安装 Playwright 浏览器：
 
 ```bash
 python3 -m venv .venv
@@ -33,11 +32,13 @@ python3 -m venv .venv
 (cd frontend && npm install)
 ```
 
-4. 确保本地模型已就绪：
+3. 确保本地模型已就绪：
 
 ```bash
 ollama pull gemma4:latest
 ```
+
+首次启动时，程序会检查 `DATABASE_URL` 指向的 MySQL 数据库；数据库不存在时自动创建，并由迁移补齐所需表。该 MySQL 账户需要拥有目标数据库的 `CREATE` 权限；若只授予既有数据库权限，请先手动创建数据库。
 
 ## LLM 配置
 

@@ -33,6 +33,10 @@ ensure_port_available "$BACKEND_PORT"
 ensure_port_available "$FRONTEND_PORT"
 
 mkdir -p "$RUN_DIR"
+(
+  cd "$ROOT_DIR/backend"
+  "$PYTHON_BIN" -c 'from app.database import ensure_database_exists; ensure_database_exists()'
+)
 "$PYTHON_BIN" -m alembic -c "$ROOT_DIR/alembic.ini" upgrade head
 
 (

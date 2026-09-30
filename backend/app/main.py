@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api import router
 from .config import get_settings
-from .database import Base, engine
+from .database import ensure_database_schema
 from .scheduler import RuleScheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -24,8 +24,7 @@ scheduler = RuleScheduler()
 
 @app.on_event("startup")
 def startup() -> None:
-    # 首版直接使用本地 MySQL；正式部署时应改由 Alembic 管理迁移。
-    Base.metadata.create_all(engine)
+    ensure_database_schema()
     scheduler.start()
 
 

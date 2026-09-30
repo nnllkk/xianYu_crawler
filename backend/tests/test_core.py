@@ -19,6 +19,7 @@ from app.llm.factory import ProviderFactory  # noqa: E402
 from app.llm.ollama import OllamaProvider  # noqa: E402
 from app.llm.service import LLMService  # noqa: E402
 from app.database import Base  # noqa: E402
+import app.database as database_module  # noqa: E402
 from app.models import NotificationState, TaskRun, WatchRule, RuleRecipient, XianyuAccount, beijing_now  # noqa: E402
 from app.services.task_runner import TaskRunner, TaskStoppedError  # noqa: E402
 from app.services.xianyu_accounts import XianyuAccountService  # noqa: E402
@@ -74,6 +75,58 @@ def test_pipeline_limits_are_configurable() -> None:
     assert settings.initial_assessment_concurrency == 4
     assert settings.llm_item_assessment_context_length == 3072
     assert settings.llm_candidate_ranking_context_length == 8192
+
+
+def test_mysql_database_preflight_creates_the_configured_database(monkeypatch) -> None:
+    executed = []
+
+    class FakeServerEngine:
+        def begin(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def dispose(self):
+            pass
+
+        class dialect:
+            class identifier_preparer:
+                @staticmethod
+                def quote(name):
+                    return f"`{name}`"
+
+        def execute(self, statement):
+            executed.append(str(statement))
+
+    monkeypatch.setattr(database_module, "create_engine", lambda *_args, **_kwargs: FakeServerEngine())
+    monkeypatch.setattr(database_module, "get_settings", lambda: Settings(
+        database_url="mysql+pymysql://user:password@127.0.0.1:3306/xianyu_filter"
+    ))
+
+    database_module.ensure_database_exists()
+
+    assert executed == [
+        "CREATE DATABASE IF NOT EXISTS `xianyu_filter` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+    ]
+
+
+def test_database_preflight_skips_non_mysql_urls(monkeypatch) -> None:
+    called = False
+
+    def unexpected_engine(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(database_module, "create_engine", unexpected_engine)
+    monkeypatch.setattr(database_module, "get_settings", lambda: Settings(database_url="sqlite+pysqlite:///:memory:"))
+
+    database_module.ensure_database_exists()
+
+    assert not called
 
 
 def test_llm_default_model_is_loaded_from_config() -> None:
