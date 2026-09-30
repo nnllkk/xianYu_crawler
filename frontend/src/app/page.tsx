@@ -7,6 +7,7 @@ import {
   CircleStop,
   Edit3,
   FileKey2,
+  LoaderCircle,
   Mail,
   Play,
   Plus,
@@ -146,6 +147,7 @@ export default function Home() {
     [taskPage, setTaskPage] = useState(1),
     [taskTotal, setTaskTotal] = useState(0);
   const current = rules.find((x) => x.id === picked) ?? null;
+  const savingRule = busy === "save";
   const load = useCallback(async () => {
     try {
       const items = await call<Rule[]>("/api/rules");
@@ -539,6 +541,7 @@ export default function Home() {
                   <button
                     className="text"
                     type="button"
+                    disabled={savingRule}
                     onClick={() => {
                       setEditing(null);
                       setDraft(empty);
@@ -548,13 +551,14 @@ export default function Home() {
                   </button>
                 )}
               </div>
-              <form onSubmit={save}>
+              <form onSubmit={save} aria-busy={savingRule}>
                 <label className="product">
                   想找什么商品
                   <input
                     value={draft.product}
                     onChange={(e) => change("product", e.target.value)}
                     placeholder="例如：MacBook M1 Pro"
+                    disabled={savingRule}
                   />
                 </label>
                 <label>
@@ -563,6 +567,7 @@ export default function Home() {
                     value={draft.budget}
                     onChange={(e) => change("budget", e.target.value)}
                     placeholder="6000-8000（可空）"
+                    disabled={savingRule}
                   />
                 </label>
                 <label>
@@ -571,6 +576,7 @@ export default function Home() {
                     value={draft.emails}
                     onChange={(e) => change("emails", e.target.value)}
                     placeholder="多个邮箱用逗号分隔"
+                    disabled={savingRule}
                   />
                 </label>
                 <label className="wide">
@@ -579,6 +585,7 @@ export default function Home() {
                     value={draft.extra_conditions}
                     onChange={(e) => change("extra_conditions", e.target.value)}
                     placeholder="例如：16寸 32G+512G，成色好，不要维修机或企业管理机"
+                    disabled={savingRule}
                   />
                 </label>
                 <label>
@@ -588,6 +595,7 @@ export default function Home() {
                     onChange={(e) =>
                       change("interval_minutes", Number(e.target.value))
                     }
+                    disabled={savingRule}
                   >
                     {[10, 15, 20, 30].map((x) => (
                       <option key={x}>{x}</option>
@@ -599,6 +607,7 @@ export default function Home() {
                   <select
                     value={draft.max_pages}
                     onChange={(e) => change("max_pages", Number(e.target.value))}
+                    disabled={savingRule}
                   >
                     {Array.from({ length: 20 }, (_, index) => index + 1).map((x) => (
                       <option key={x} value={x}>{x} 页</option>
@@ -611,15 +620,35 @@ export default function Home() {
                       type="checkbox"
                       checked={draft.enabled}
                       onChange={(e) => change("enabled", e.target.checked)}
+                      disabled={savingRule}
                     />
                     <span />
                     {editing ? "保存后保持启用状态" : "创建后自动启用"}
                   </label>
-                  <button className="primary" disabled={busy === "save"}>
-                    {editing ? <Save size={15} /> : <Plus size={15} />}
-                    {editing ? "保存修改" : "创建规则"}
+                  <button className="primary" disabled={savingRule}>
+                    {savingRule ? (
+                      <LoaderCircle className="spin" size={15} />
+                    ) : editing ? (
+                      <Save size={15} />
+                    ) : (
+                      <Plus size={15} />
+                    )}
+                    {savingRule
+                      ? "正在解析并保存"
+                      : editing
+                        ? "保存修改"
+                        : "创建规则"}
                   </button>
                 </div>
+                {savingRule && (
+                  <div className="save-progress" role="status" aria-live="polite">
+                    <LoaderCircle className="spin" size={18} />
+                    <div>
+                      <strong>正在解析筛选条件</strong>
+                      <span>规则将在解析完成后保存，预计需要 5-10 秒。</span>
+                    </div>
+                  </div>
+                )}
               </form>
             </section>
             <div className="list-head">
