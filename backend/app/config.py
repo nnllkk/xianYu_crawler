@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     siliconflow_api_key: str = Field(default="", validation_alias="SILICONFLOW_API_KEY")
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
     llm_provider: str = "ollama"
+    llm_default_model: str = "gemma4:latest"
+    llm_provider_configs: dict[str, dict] = Field(default_factory=dict)
+    llm_task_provider_map: dict[str, str] = Field(default_factory=dict)
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "gemma4:latest"
     llm_model: str = "gemma4:latest"
@@ -67,12 +70,17 @@ def get_settings() -> Settings:
         settings = settings.model_copy(update={
             "siliconflow_base_url": siliconflow.get("base_url", settings.siliconflow_base_url),
             "llm_provider": llm.get("default_provider", settings.llm_provider),
-            "llm_model": tasks.get("user_requirement", {}).get("model", settings.llm_model),
+            "llm_provider_configs": providers,
+            "llm_task_provider_map": {
+                task_name: task_config.get("provider")
+                for task_name, task_config in tasks.items()
+                if task_config.get("provider")
+            },
+            "llm_default_model": llm.get("default_model", settings.llm_default_model),
+            "llm_model": llm.get("default_model", settings.llm_model),
             "llm_retry_count": llm.get("retry_count", settings.llm_retry_count),
             "llm_retry_delay_seconds": llm.get("retry_delay_seconds", settings.llm_retry_delay_seconds),
             "llm_timeout_seconds": llm.get("timeout_seconds", settings.llm_timeout_seconds),
-            "ollama_base_url": values.get("ollama", {}).get("base_url", settings.ollama_base_url),
-            "ollama_model": values.get("ollama", {}).get("model", settings.ollama_model),
             "llm_user_requirement_context_length": tasks.get(
                 "user_requirement", {}).get("context_length", settings.llm_user_requirement_context_length),
             "llm_item_assessment_context_length": tasks.get(

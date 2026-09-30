@@ -58,7 +58,8 @@ class RuleScheduler:
 
     async def _run_with_retry(self, rule_id: str) -> None:
         settings = get_settings()
-        runner = TaskRunner(settings, LLMService(ProviderFactory.create(settings, settings.llm_provider), settings))
+        providers = ProviderFactory.create_task_providers(settings)
+        runner = TaskRunner(settings, LLMService(providers[settings.llm_provider], settings, providers))
         session = SessionLocal()
         task = TaskRun(rule_id=rule_id, status="pending", stage="pending")
         session.add(task)

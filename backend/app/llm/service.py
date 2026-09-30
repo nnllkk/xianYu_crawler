@@ -53,16 +53,29 @@ RANKING_SYSTEM_PROMPT = """你是闲鱼二手商品候选排序器。
 
 
 class LLMService:
-    def __init__(self, provider: LLMProvider, settings: Settings) -> None:
+    def __init__(self, provider: LLMProvider, settings: Settings,
+                 providers: dict[str, LLMProvider] | None = None) -> None:
         self.provider = provider
         self.settings = settings
+        self.providers = providers or {settings.llm_provider: provider}
+
+    def _provider_for(self, schema_name: str) -> LLMProvider:
+        task_name = {
+            "UserRequirement": "user_requirement",
+            "ItemAssessment": "item_assessment",
+            "RankingResult": "candidate_ranking",
+        }.get(schema_name)
+        provider_name = self.settings.llm_task_provider_map.get(task_name, self.settings.llm_provider)
+        return self.providers.get(provider_name, self.provider)
 
     def _request(self, schema: type[T], system: str, user: str) -> T:
         last_error: Exception | None = None
         for attempt in range(self.settings.llm_retry_count + 1):
             started = time.monotonic()
             try:
-                content = self.provider.complete_json(system=system, user=user, schema_name=schema.__name__)
+                content = self._provider_for(schema.__name__).complete_json(
+                    system=system, user=user, schema_name=schema.__name__,
+                )
                 result = schema.model_validate_json(content)
                 logger.info("llm call succeeded", extra={"schema": schema.__name__, "attempt": attempt + 1,
                                                            "duration_ms": round((time.monotonic() - started) * 1000)})

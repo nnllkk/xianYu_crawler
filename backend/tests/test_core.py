@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from app.llm.schemas import UserRequirement  # noqa: E402
-from app.config import Settings  # noqa: E402
+from app.config import Settings, get_settings  # noqa: E402
 from app.llm.factory import ProviderFactory  # noqa: E402
 from app.llm.ollama import OllamaProvider  # noqa: E402
 from app.llm.service import LLMService  # noqa: E402
@@ -72,6 +72,13 @@ def test_pipeline_limits_are_configurable() -> None:
     assert settings.initial_assessment_concurrency == 4
     assert settings.llm_item_assessment_context_length == 3072
     assert settings.llm_candidate_ranking_context_length == 8192
+
+
+def test_llm_default_model_is_loaded_from_config() -> None:
+    settings = get_settings()
+    assert settings.llm_default_model == "gemma4:latest"
+    assert "ollama" in settings.llm_provider_configs
+    assert "model" not in settings.llm_provider_configs["ollama"]
 
 
 def test_assessment_parallelism_only_starts_above_queue_high_water_mark() -> None:
@@ -202,6 +209,35 @@ def test_llm_retries_with_linear_backoff(monkeypatch) -> None:
     assert result.keyword == "MacBook"
     assert attempts == ["UserRequirement"] * 4
     assert delays == [5, 10, 15]
+
+
+def test_llm_routes_tasks_to_configured_providers() -> None:
+    class RecordingProvider:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.calls = []
+
+        def complete_json(self, *, system, user, schema_name):
+            self.calls.append(schema_name)
+            if schema_name == "UserRequirement":
+                return '{"keyword":"MacBook","search_query":"MacBook","price_range":{"min":null,"max":null},"conditions":[],"original_input":{"product":"MacBook"}}'
+            if schema_name == "ItemAssessment":
+                return '{"xianyu_item_id":"1","worthwhile":true,"reason":"ok","risks":[],"uncertain":false}'
+            return '{"items":[]}'
+
+    settings = Settings(
+        llm_provider="ollama",
+        llm_task_provider_map={"user_requirement": "remote", "item_assessment": "local", "candidate_ranking": "remote"},
+    )
+    local = RecordingProvider("local")
+    remote = RecordingProvider("remote")
+    service = LLMService(local, settings, {"local": local, "remote": remote, "ollama": local})
+    requirement = service.parse_requirement("MacBook", None, None)
+    service.assess(requirement, {"xianyu_item_id": "1", "title": "MacBook", "price": 1})
+    service.rank(requirement, [])
+
+    assert remote.calls == ["UserRequirement", "RankingResult"]
+    assert local.calls == ["ItemAssessment"]
 
 
 def test_requirement_budget_is_deterministic_when_model_omits_it() -> None:

@@ -32,14 +32,16 @@ def _run_manual_task(rule_id: str, task_id: str) -> None:
 
 def get_runner() -> TaskRunner:
     settings = get_settings()
-    return TaskRunner(settings, LLMService(ProviderFactory.create(settings, settings.llm_provider), settings))
+    providers = ProviderFactory.create_task_providers(settings)
+    return TaskRunner(settings, LLMService(providers[settings.llm_provider], settings, providers))
 
 
 def parse_rule_requirement(payload: RuleCreate) -> UserRequirement:
     """在保存规则前完成需求解析，确保首次任务可直接使用缓存。"""
     settings = get_settings()
     try:
-        return LLMService(ProviderFactory.create(settings, settings.llm_provider), settings).parse_requirement(
+        providers = ProviderFactory.create_task_providers(settings)
+        return LLMService(providers[settings.llm_provider], settings, providers).parse_requirement(
             payload.product,
             payload.extra_conditions,
             payload.budget,

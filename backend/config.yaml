@@ -2,6 +2,7 @@ app:
   timezone: Asia/Shanghai
 llm:
   default_provider: ollama
+  default_model: gemma4:latest
   retry_count: 3
   retry_delay_seconds: 5
   timeout_seconds: 300
@@ -19,17 +20,18 @@ llm:
       model: gemma4:latest
       context_length: 16384
   providers:
+    ollama:
+      type: ollama
+      base_url: http://127.0.0.1:11434
     siliconflow:
+      type: siliconflow
       base_url: https://api.siliconflow.cn/v1
       api_key_env: SILICONFLOW_API_KEY
-ollama:
-  base_url: http://127.0.0.1:11434
-  model: gemma4:latest
 scheduler:
-  poll_interval_minutes: 1
-  min_interval_minutes: 10
-  max_interval_minutes: 30
-  max_task_retries: 3
+  poll_interval_minutes: 1 # 轮询间隔，单位分钟
+  min_interval_minutes: 10 # 最小轮询间隔，单位分钟
+  max_interval_minutes: 30 # 最大轮询间隔，单位分钟
+  max_task_retries: 3 # 最大任务重试次数
 collector:
   # 闲鱼会拦截当前无头浏览器环境；默认使用可见浏览器进行已授权会话采集。
   headless: false
